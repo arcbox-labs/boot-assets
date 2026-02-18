@@ -189,6 +189,7 @@ if [[ -f "$BASE_DIR/runtime/runtime-metadata.env" ]]; then
 fi
 
 echo "==> build arcbox-agent"
+CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="${CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER:-rust-lld}" \
 cargo build \
   --manifest-path "$ARCBOX_DIR/Cargo.toml" \
   -p arcbox-agent \

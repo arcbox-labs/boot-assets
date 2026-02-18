@@ -138,7 +138,9 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          brew install FiloSottile/musl-cross/musl-cross squashfs
+          if ! command -v unsquashfs >/dev/null 2>&1; then
+            brew install squashfs
+          fi
 
       - name: Build release assets
         id: build
