@@ -51,7 +51,7 @@ chmod +x scripts/*.sh
 ./scripts/build-release.sh \
   --version 0.0.1-alpha.3 \
   --arcbox-dir ../arcbox \
-  --arcbox-repo AprilNEA/ArcBox \
+  --arcbox-repo arcbox-labs/arcbox \
   --arcbox-ref master
 ```
 

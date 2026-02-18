@@ -13,7 +13,7 @@ on:
       arcbox_repo:
         description: "ArcBox source repository"
         required: false
-        default: "AprilNEA/ArcBox"
+        default: "arcbox-labs/arcbox"
         type: string
       arcbox_ref:
         description: "ArcBox source ref (branch/tag/sha)"
@@ -101,7 +101,7 @@ jobs:
           YOUKI_VERSION="${{ github.event.inputs.youki_version }}"
           YOUKI_SHA256="${{ github.event.inputs.youki_sha256 }}"
 
-          [ -z "$ARCBOX_REPO" ] && ARCBOX_REPO="AprilNEA/ArcBox"
+          [ -z "$ARCBOX_REPO" ] && ARCBOX_REPO="arcbox-labs/arcbox"
           [ -z "$ARCBOX_REF" ] && ARCBOX_REF="master"
           [ -z "$ALPINE_VERSION" ] && ALPINE_VERSION="3.21"
           [ -z "$ALPINE_FLAVOR" ] && ALPINE_FLAVOR="lts"
