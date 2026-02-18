@@ -124,12 +124,12 @@ jobs:
           echo "youki_version=$YOUKI_VERSION" >> "$GITHUB_OUTPUT"
           echo "youki_sha256=$YOUKI_SHA256" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout arcbox source
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ steps.vars.outputs.arcbox_repo }}
-          ref: ${{ steps.vars.outputs.arcbox_ref }}
-          path: arcbox-src
+      - name: Clone arcbox source
+        run: |
+          git clone --depth 1 \
+            --branch "${{ steps.vars.outputs.arcbox_ref }}" \
+            "https://github.com/${{ steps.vars.outputs.arcbox_repo }}.git" \
+            arcbox-src
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
