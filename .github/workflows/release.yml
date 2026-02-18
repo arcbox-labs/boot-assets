@@ -141,6 +141,9 @@ jobs:
           if ! command -v unsquashfs >/dev/null 2>&1; then
             brew install squashfs
           fi
+          if ! command -v protoc >/dev/null 2>&1; then
+            brew install protobuf
+          fi
 
       - name: Build release assets
         id: build

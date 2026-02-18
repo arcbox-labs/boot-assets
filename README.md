@@ -39,8 +39,9 @@ Trigger:
 Prerequisites:
 
 1. Rust toolchain with `aarch64-unknown-linux-musl`
-2. `unsquashfs`, `cpio`, `curl`, `shasum`, `tar`
-3. ArcBox source checkout (for building `arcbox-agent`)
+2. `protoc` (`protobuf`) for compiling `arcbox-protocol`
+3. `unsquashfs`, `cpio`, `curl`, `shasum`, `tar`
+4. ArcBox source checkout (for building `arcbox-agent`)
 
 Example:
 
