@@ -1,0 +1,155 @@
+name: Boot Assets Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (for example: 0.0.1-alpha.3)"
+        required: true
+        type: string
+      arcbox_repo:
+        description: "ArcBox source repository"
+        required: false
+        default: "AprilNEA/ArcBox"
+        type: string
+      arcbox_ref:
+        description: "ArcBox source ref (branch/tag/sha)"
+        required: false
+        default: "master"
+        type: string
+      alpine_version:
+        description: "Alpine release version"
+        required: false
+        default: "3.21"
+        type: string
+      alpine_flavor:
+        description: "Alpine netboot flavor"
+        required: false
+        default: "lts"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Boot Assets
+    runs-on: macos-14
+
+    outputs:
+      version: ${{ steps.vars.outputs.version }}
+      tarball: ${{ steps.build.outputs.tarball }}
+
+    steps:
+      - name: Checkout boot-assets repository
+        uses: actions/checkout@v4
+
+      - name: Resolve build variables
+        id: vars
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION="${{ github.ref_name }}"
+            VERSION="${VERSION#v}"
+          else
+            echo "unable to resolve version" >&2
+            exit 1
+          fi
+
+          ARCBOX_REPO="${{ github.event.inputs.arcbox_repo }}"
+          ARCBOX_REF="${{ github.event.inputs.arcbox_ref }}"
+          ALPINE_VERSION="${{ github.event.inputs.alpine_version }}"
+          ALPINE_FLAVOR="${{ github.event.inputs.alpine_flavor }}"
+
+          [ -z "$ARCBOX_REPO" ] && ARCBOX_REPO="AprilNEA/ArcBox"
+          [ -z "$ARCBOX_REF" ] && ARCBOX_REF="master"
+          [ -z "$ALPINE_VERSION" ] && ALPINE_VERSION="3.21"
+          [ -z "$ALPINE_FLAVOR" ] && ALPINE_FLAVOR="lts"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "arcbox_repo=$ARCBOX_REPO" >> "$GITHUB_OUTPUT"
+          echo "arcbox_ref=$ARCBOX_REF" >> "$GITHUB_OUTPUT"
+          echo "alpine_version=$ALPINE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "alpine_flavor=$ALPINE_FLAVOR" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout arcbox source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.vars.outputs.arcbox_repo }}
+          ref: ${{ steps.vars.outputs.arcbox_ref }}
+          path: arcbox-src
+
+      - name: Setup Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          toolchain: stable
+          targets: aarch64-unknown-linux-musl
+
+      - name: Install build dependencies
+        run: |
+          brew install FiloSottile/musl-cross/musl-cross squashfs
+
+      - name: Build release assets
+        id: build
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/build-release.sh \
+            --version "${{ steps.vars.outputs.version }}" \
+            --arcbox-dir "$PWD/arcbox-src" \
+            --arcbox-repo "${{ steps.vars.outputs.arcbox_repo }}" \
+            --arcbox-ref "${{ steps.vars.outputs.arcbox_ref }}" \
+            --alpine-version "${{ steps.vars.outputs.alpine_version }}" \
+            --alpine-flavor "${{ steps.vars.outputs.alpine_flavor }}" \
+            --output-dir "$PWD/dist"
+
+          TARBALL="boot-assets-arm64-v${{ steps.vars.outputs.version }}.tar.gz"
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+          echo "arcbox_sha=$(git -C arcbox-src rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-assets-release
+          path: |
+            dist/${{ steps.build.outputs.tarball }}
+            dist/${{ steps.build.outputs.tarball }}.sha256
+            dist/manifest.json
+          retention-days: 14
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: boot-assets-release
+          path: dist
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Boot Assets v${{ needs.build.outputs.version }}
+          body: |
+            ## Boot Assets v${{ needs.build.outputs.version }}
+
+            ### Files
+            - `${{ needs.build.outputs.tarball }}`
+            - `${{ needs.build.outputs.tarball }}.sha256`
+            - `manifest.json`
+
+            ### Build Source
+            Built from ArcBox repository pinned in `manifest.json`.
+          files: |
+            dist/${{ needs.build.outputs.tarball }}
+            dist/${{ needs.build.outputs.tarball }}.sha256
+            dist/manifest.json
+          draft: false
+          prerelease: ${{ contains(needs.build.outputs.version, 'alpha') || contains(needs.build.outputs.version, 'beta') }}
