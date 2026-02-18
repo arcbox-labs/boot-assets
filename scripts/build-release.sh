@@ -14,6 +14,12 @@ ARCBOX_DIR=""
 ARCBOX_REPO="unknown"
 ARCBOX_REF="unknown"
 OUTPUT_DIR="$ROOT_DIR/dist"
+DOCKER_VERSION=""
+DOCKER_SHA256=""
+CONTAINERD_VERSION=""
+CONTAINERD_SHA256=""
+YOUKI_VERSION=""
+YOUKI_SHA256=""
 
 usage() {
   cat <<'EOF'
@@ -27,6 +33,12 @@ Optional:
   --arch <arch>            Target architecture (default: arm64)
   --alpine-version <ver>   Alpine release version (default: 3.21)
   --alpine-flavor <name>   Alpine netboot flavor (default: lts)
+  --docker-version <ver>   Docker static bundle version
+  --docker-sha256 <sha>    Docker static bundle sha256
+  --containerd-version <v> containerd static bundle version
+  --containerd-sha256 <s>  containerd static bundle sha256
+  --youki-version <ver>    youki version
+  --youki-sha256 <sha>     youki tarball sha256
   --arcbox-repo <repo>     ArcBox source repository (for manifest)
   --arcbox-ref <ref>       ArcBox source ref (for manifest)
   --output-dir <dir>       Output directory (default: dist/)
@@ -53,6 +65,30 @@ while [[ $# -gt 0 ]]; do
       ;;
     --alpine-flavor)
       ALPINE_FLAVOR="$2"
+      shift 2
+      ;;
+    --docker-version)
+      DOCKER_VERSION="$2"
+      shift 2
+      ;;
+    --docker-sha256)
+      DOCKER_SHA256="$2"
+      shift 2
+      ;;
+    --containerd-version)
+      CONTAINERD_VERSION="$2"
+      shift 2
+      ;;
+    --containerd-sha256)
+      CONTAINERD_SHA256="$2"
+      shift 2
+      ;;
+    --youki-version)
+      YOUKI_VERSION="$2"
+      shift 2
+      ;;
+    --youki-sha256)
+      YOUKI_SHA256="$2"
       shift 2
       ;;
     --arcbox-repo)
@@ -118,9 +154,38 @@ echo "==> download base kernel/initramfs/modloop"
   --flavor "$ALPINE_FLAVOR" \
   --out-dir "$BASE_DIR"
 
+echo "==> download runtime artifacts"
+runtime_args=(
+  --arch "$ARCH"
+  --out-dir "$BASE_DIR/runtime"
+)
+if [[ -n "$DOCKER_VERSION" ]]; then
+  runtime_args+=(--docker-version "$DOCKER_VERSION")
+fi
+if [[ -n "$DOCKER_SHA256" ]]; then
+  runtime_args+=(--docker-sha256 "$DOCKER_SHA256")
+fi
+if [[ -n "$CONTAINERD_VERSION" ]]; then
+  runtime_args+=(--containerd-version "$CONTAINERD_VERSION")
+fi
+if [[ -n "$CONTAINERD_SHA256" ]]; then
+  runtime_args+=(--containerd-sha256 "$CONTAINERD_SHA256")
+fi
+if [[ -n "$YOUKI_VERSION" ]]; then
+  runtime_args+=(--youki-version "$YOUKI_VERSION")
+fi
+if [[ -n "$YOUKI_SHA256" ]]; then
+  runtime_args+=(--youki-sha256 "$YOUKI_SHA256")
+fi
+"$SCRIPT_DIR/download-runtime.sh" "${runtime_args[@]}"
+
 if [[ -f "$BASE_DIR/netboot-metadata.env" ]]; then
   # shellcheck disable=SC1090
   source "$BASE_DIR/netboot-metadata.env"
+fi
+if [[ -f "$BASE_DIR/runtime/runtime-metadata.env" ]]; then
+  # shellcheck disable=SC1090
+  source "$BASE_DIR/runtime/runtime-metadata.env"
 fi
 
 echo "==> build arcbox-agent"
@@ -144,11 +209,19 @@ echo "==> build initramfs"
   --output "$WORK_DIR/initramfs.cpio.gz"
 
 cp "$BASE_DIR/vmlinuz-${ARCH}" "$WORK_DIR/kernel"
+rm -rf "$WORK_DIR/runtime"
+cp -R "$BASE_DIR/runtime" "$WORK_DIR/runtime"
 
 KERNEL_SHA256="$(shasum -a 256 "$WORK_DIR/kernel" | awk '{print $1}')"
 INITRAMFS_SHA256="$(shasum -a 256 "$WORK_DIR/initramfs.cpio.gz" | awk '{print $1}')"
 ARCBOX_SHA="$(git -C "$ARCBOX_DIR" rev-parse HEAD)"
 BUILT_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+RUNTIME_DOCKER_VERSION="${RUNTIME_DOCKER_VERSION:-unknown}"
+RUNTIME_CONTAINERD_VERSION="${RUNTIME_CONTAINERD_VERSION:-unknown}"
+RUNTIME_YOUKI_VERSION="${RUNTIME_YOUKI_VERSION:-unknown}"
+RUNTIME_DOCKERD_SHA256="${RUNTIME_DOCKERD_SHA256:-$(shasum -a 256 "$WORK_DIR/runtime/bin/dockerd" | awk '{print $1}')}"
+RUNTIME_CONTAINERD_SHA256="${RUNTIME_CONTAINERD_SHA256:-$(shasum -a 256 "$WORK_DIR/runtime/bin/containerd" | awk '{print $1}')}"
+RUNTIME_YOUKI_SHA256="${RUNTIME_YOUKI_SHA256:-$(shasum -a 256 "$WORK_DIR/runtime/bin/youki" | awk '{print $1}')}"
 
 cat > "$WORK_DIR/manifest.json" <<EOF
 {
@@ -169,6 +242,26 @@ cat > "$WORK_DIR/manifest.json" <<EOF
   "agent_commit": "${ARCBOX_SHA}",
   "built_at": "${BUILT_AT}",
   "kernel_cmdline": "console=hvc0 rdinit=/init quiet",
+  "runtime_assets": [
+    {
+      "name": "dockerd",
+      "path": "runtime/bin/dockerd",
+      "version": "${RUNTIME_DOCKER_VERSION}",
+      "sha256": "${RUNTIME_DOCKERD_SHA256}"
+    },
+    {
+      "name": "containerd",
+      "path": "runtime/bin/containerd",
+      "version": "${RUNTIME_CONTAINERD_VERSION}",
+      "sha256": "${RUNTIME_CONTAINERD_SHA256}"
+    },
+    {
+      "name": "youki",
+      "path": "runtime/bin/youki",
+      "version": "${RUNTIME_YOUKI_VERSION}",
+      "sha256": "${RUNTIME_YOUKI_SHA256}"
+    }
+  ],
   "source_repo": "${ARCBOX_REPO}",
   "source_ref": "${ARCBOX_REF}",
   "source_sha": "${ARCBOX_SHA}"
@@ -178,7 +271,7 @@ EOF
 TARBALL="boot-assets-${ARCH}-v${VERSION}.tar.gz"
 
 echo "==> package tarball"
-tar -czf "$OUTPUT_DIR/$TARBALL" -C "$WORK_DIR" kernel initramfs.cpio.gz manifest.json
+tar -czf "$OUTPUT_DIR/$TARBALL" -C "$WORK_DIR" kernel initramfs.cpio.gz manifest.json runtime
 shasum -a 256 "$OUTPUT_DIR/$TARBALL" > "$OUTPUT_DIR/$TARBALL.sha256"
 cp "$WORK_DIR/manifest.json" "$OUTPUT_DIR/manifest.json"
 

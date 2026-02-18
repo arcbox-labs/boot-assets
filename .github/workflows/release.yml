@@ -30,6 +30,36 @@ on:
         required: false
         default: "lts"
         type: string
+      docker_version:
+        description: "Docker static bundle version"
+        required: false
+        default: "28.0.3"
+        type: string
+      docker_sha256:
+        description: "Docker static bundle sha256"
+        required: false
+        default: "6a5fe587e1224871a87ef46dede1dd65cfb69a2c61e1368556f59c2e78d67d7f"
+        type: string
+      containerd_version:
+        description: "containerd static bundle version"
+        required: false
+        default: "1.7.26"
+        type: string
+      containerd_sha256:
+        description: "containerd static bundle sha256"
+        required: false
+        default: "f35d8eb8467b7875ab768b4b869c9905616d998549e1e0ed993a52eec319dc51"
+        type: string
+      youki_version:
+        description: "youki version"
+        required: false
+        default: "0.5.7"
+        type: string
+      youki_sha256:
+        description: "youki tarball sha256"
+        required: false
+        default: "b3002d9d39b04f797e783745f92cffec9e0caa464254be98aa0b4dfc184f0233"
+        type: string
 
 permissions:
   contents: write
@@ -64,17 +94,35 @@ jobs:
           ARCBOX_REF="${{ github.event.inputs.arcbox_ref }}"
           ALPINE_VERSION="${{ github.event.inputs.alpine_version }}"
           ALPINE_FLAVOR="${{ github.event.inputs.alpine_flavor }}"
+          DOCKER_VERSION="${{ github.event.inputs.docker_version }}"
+          DOCKER_SHA256="${{ github.event.inputs.docker_sha256 }}"
+          CONTAINERD_VERSION="${{ github.event.inputs.containerd_version }}"
+          CONTAINERD_SHA256="${{ github.event.inputs.containerd_sha256 }}"
+          YOUKI_VERSION="${{ github.event.inputs.youki_version }}"
+          YOUKI_SHA256="${{ github.event.inputs.youki_sha256 }}"
 
           [ -z "$ARCBOX_REPO" ] && ARCBOX_REPO="AprilNEA/ArcBox"
           [ -z "$ARCBOX_REF" ] && ARCBOX_REF="master"
           [ -z "$ALPINE_VERSION" ] && ALPINE_VERSION="3.21"
           [ -z "$ALPINE_FLAVOR" ] && ALPINE_FLAVOR="lts"
+          [ -z "$DOCKER_VERSION" ] && DOCKER_VERSION="28.0.3"
+          [ -z "$DOCKER_SHA256" ] && DOCKER_SHA256="6a5fe587e1224871a87ef46dede1dd65cfb69a2c61e1368556f59c2e78d67d7f"
+          [ -z "$CONTAINERD_VERSION" ] && CONTAINERD_VERSION="1.7.26"
+          [ -z "$CONTAINERD_SHA256" ] && CONTAINERD_SHA256="f35d8eb8467b7875ab768b4b869c9905616d998549e1e0ed993a52eec319dc51"
+          [ -z "$YOUKI_VERSION" ] && YOUKI_VERSION="0.5.7"
+          [ -z "$YOUKI_SHA256" ] && YOUKI_SHA256="b3002d9d39b04f797e783745f92cffec9e0caa464254be98aa0b4dfc184f0233"
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "arcbox_repo=$ARCBOX_REPO" >> "$GITHUB_OUTPUT"
           echo "arcbox_ref=$ARCBOX_REF" >> "$GITHUB_OUTPUT"
           echo "alpine_version=$ALPINE_VERSION" >> "$GITHUB_OUTPUT"
           echo "alpine_flavor=$ALPINE_FLAVOR" >> "$GITHUB_OUTPUT"
+          echo "docker_version=$DOCKER_VERSION" >> "$GITHUB_OUTPUT"
+          echo "docker_sha256=$DOCKER_SHA256" >> "$GITHUB_OUTPUT"
+          echo "containerd_version=$CONTAINERD_VERSION" >> "$GITHUB_OUTPUT"
+          echo "containerd_sha256=$CONTAINERD_SHA256" >> "$GITHUB_OUTPUT"
+          echo "youki_version=$YOUKI_VERSION" >> "$GITHUB_OUTPUT"
+          echo "youki_sha256=$YOUKI_SHA256" >> "$GITHUB_OUTPUT"
 
       - name: Checkout arcbox source
         uses: actions/checkout@v4
@@ -104,6 +152,12 @@ jobs:
             --arcbox-ref "${{ steps.vars.outputs.arcbox_ref }}" \
             --alpine-version "${{ steps.vars.outputs.alpine_version }}" \
             --alpine-flavor "${{ steps.vars.outputs.alpine_flavor }}" \
+            --docker-version "${{ steps.vars.outputs.docker_version }}" \
+            --docker-sha256 "${{ steps.vars.outputs.docker_sha256 }}" \
+            --containerd-version "${{ steps.vars.outputs.containerd_version }}" \
+            --containerd-sha256 "${{ steps.vars.outputs.containerd_sha256 }}" \
+            --youki-version "${{ steps.vars.outputs.youki_version }}" \
+            --youki-sha256 "${{ steps.vars.outputs.youki_sha256 }}" \
             --output-dir "$PWD/dist"
 
           TARBALL="boot-assets-arm64-v${{ steps.vars.outputs.version }}.tar.gz"

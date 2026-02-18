@@ -12,7 +12,8 @@ The tarball contains:
 
 1. `kernel`
 2. `initramfs.cpio.gz`
-3. `manifest.json`
+3. `runtime/bin/` (`dockerd`, `containerd`, `youki`, and helper binaries)
+4. `manifest.json`
 
 ## Runtime Consumption
 
@@ -56,9 +57,20 @@ chmod +x scripts/*.sh
 
 Output files are written to `dist/`.
 
+Optional runtime version overrides:
+
+```bash
+./scripts/build-release.sh \
+  --version 0.0.1-alpha.3 \
+  --arcbox-dir ../arcbox \
+  --docker-version 28.0.3 \
+  --containerd-version 1.7.26 \
+  --youki-version 0.5.7
+```
+
 ## Notes
 
 1. Base assets are fetched from Alpine `alpine-netboot` tarball.
 2. Download step validates tarball SHA256 from Alpine `latest-releases.yaml`.
 3. `initramfs.cpio.gz` is rebuilt with `arcbox-agent` injected.
-4. `manifest.json` records source repository/ref/sha and artifact checksums.
+4. `manifest.json` records source repository/ref/sha, artifact checksums, and `runtime_assets` metadata.
