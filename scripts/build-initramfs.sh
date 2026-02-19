@@ -99,8 +99,22 @@ if [[ -z "$KERNEL_VERSION" ]]; then
 fi
 echo "kernel version: $KERNEL_VERSION"
 
+mkdir -p "$WORK_DIR/lib/modules/$KERNEL_VERSION/kernel/drivers/virtio"
+mkdir -p "$WORK_DIR/lib/modules/$KERNEL_VERSION/kernel/drivers/char"
 mkdir -p "$WORK_DIR/lib/modules/$KERNEL_VERSION/kernel/net/vmw_vsock"
 mkdir -p "$WORK_DIR/lib/modules/$KERNEL_VERSION/kernel/fs/fuse"
+
+VIRTIO_SRC="$MODLOOP_EXTRACT/modules/$KERNEL_VERSION/kernel/drivers/virtio"
+if [[ -d "$VIRTIO_SRC" ]]; then
+  for mod in virtio.ko virtio_ring.ko virtio_pci.ko virtio_pci_modern_dev.ko virtio_pci_legacy_dev.ko virtio_balloon.ko virtio_mmio.ko; do
+    cp "$VIRTIO_SRC/$mod" "$WORK_DIR/lib/modules/$KERNEL_VERSION/kernel/drivers/virtio/" 2>/dev/null || true
+  done
+fi
+
+CONSOLE_SRC="$MODLOOP_EXTRACT/modules/$KERNEL_VERSION/kernel/drivers/char"
+if [[ -d "$CONSOLE_SRC" ]]; then
+  cp "$CONSOLE_SRC/virtio_console.ko" "$WORK_DIR/lib/modules/$KERNEL_VERSION/kernel/drivers/char/" 2>/dev/null || true
+fi
 
 VSOCK_SRC="$MODLOOP_EXTRACT/modules/$KERNEL_VERSION/kernel/net/vmw_vsock"
 if [[ -d "$VSOCK_SRC" ]]; then
@@ -115,13 +129,25 @@ if [[ -d "$FUSE_SRC" ]]; then
   cp "$FUSE_SRC/virtiofs.ko" "$WORK_DIR/lib/modules/$KERNEL_VERSION/kernel/fs/fuse/" 2>/dev/null || true
 fi
 
+# Remove stale binary index files from the base initramfs so modprobe uses
+# our text modules.dep which includes the additional module entries.
+rm -f "$WORK_DIR/lib/modules/$KERNEL_VERSION"/modules.*.bin
+
 touch "$WORK_DIR/lib/modules/$KERNEL_VERSION/modules.dep"
 cat >> "$WORK_DIR/lib/modules/$KERNEL_VERSION/modules.dep" <<'EOF'
+kernel/drivers/virtio/virtio.ko:
+kernel/drivers/virtio/virtio_ring.ko:
+kernel/drivers/virtio/virtio_pci_modern_dev.ko:
+kernel/drivers/virtio/virtio_pci_legacy_dev.ko:
+kernel/drivers/virtio/virtio_pci.ko: kernel/drivers/virtio/virtio_pci_legacy_dev.ko kernel/drivers/virtio/virtio_pci_modern_dev.ko kernel/drivers/virtio/virtio.ko kernel/drivers/virtio/virtio_ring.ko
+kernel/drivers/virtio/virtio_mmio.ko: kernel/drivers/virtio/virtio.ko kernel/drivers/virtio/virtio_ring.ko
+kernel/drivers/virtio/virtio_balloon.ko: kernel/drivers/virtio/virtio.ko kernel/drivers/virtio/virtio_ring.ko
+kernel/drivers/char/virtio_console.ko: kernel/drivers/virtio/virtio.ko kernel/drivers/virtio/virtio_ring.ko
 kernel/net/vmw_vsock/vsock.ko:
 kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko: kernel/net/vmw_vsock/vsock.ko
 kernel/net/vmw_vsock/vmw_vsock_virtio_transport.ko: kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko
 kernel/fs/fuse/fuse.ko:
-kernel/fs/fuse/virtiofs.ko: kernel/fs/fuse/fuse.ko
+kernel/fs/fuse/virtiofs.ko: kernel/drivers/virtio/virtio.ko kernel/drivers/virtio/virtio_ring.ko kernel/fs/fuse/fuse.ko
 EOF
 
 cat > "$WORK_DIR/init" <<'INIT_EOF'
@@ -135,11 +161,17 @@ cat > "$WORK_DIR/init" <<'INIT_EOF'
 /bin/busybox mount -t devpts devpts /dev/pts
 /bin/busybox hostname arcbox-vm
 
-echo "=================================="
-echo "  ArcBox Guest VM Starting..."
-echo "=================================="
-echo "Kernel: $(/bin/busybox uname -r)"
-echo ""
+# Load virtio bus drivers and console before any output so hvc0 works
+/sbin/modprobe virtio_pci 2>/dev/null
+/sbin/modprobe virtio_mmio 2>/dev/null
+/sbin/modprobe virtio_console 2>/dev/null
+
+# Reconnect stdin/stdout/stderr to /dev/console (created by devtmpfs above)
+exec </dev/console >/dev/console 2>&1
+
+echo "ArcBox Guest VM starting (kernel: $(/bin/busybox uname -r))"
+
+/sbin/modprobe virtio_balloon 2>/dev/null
 
 echo "Loading fuse/virtiofs modules..."
 /sbin/modprobe fuse 2>/dev/null && echo "  Loaded: fuse" || echo "  Failed: fuse"
@@ -156,11 +188,9 @@ fi
 echo ""
 
 echo "Loading vsock modules..."
-/sbin/modprobe vsock 2>/dev/null && echo "  Loaded: vsock" || echo "  Failed: vsock"
-/sbin/modprobe vmw_vsock_virtio_transport_common 2>/dev/null && echo "  Loaded: vmw_vsock_virtio_transport_common" || echo "  Failed: vmw_vsock_virtio_transport_common"
 /sbin/modprobe vmw_vsock_virtio_transport 2>/dev/null && echo "  Loaded: vmw_vsock_virtio_transport" || echo "  Failed: vmw_vsock_virtio_transport"
 
-/bin/busybox sleep 1
+/bin/busybox sleep 0.5
 
 echo "Starting arcbox-agent on vsock port 1024..."
 echo "Agent logs: /arcbox/agent.log"

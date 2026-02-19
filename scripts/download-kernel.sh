@@ -78,6 +78,51 @@ sha256_file() {
   shasum -a 256 "$file" | awk '{print $1}'
 }
 
+convert_vmlinuz_to_raw_image() {
+  local input="$1"
+  local output="$2"
+  local input_type
+  local output_type
+
+  input_type="$(file -b "$input" 2>/dev/null || true)"
+  if [[ "$input_type" == *"Linux kernel ARM64 boot executable Image"* ]]; then
+    cp "$input" "$output"
+    return
+  fi
+
+  if [[ "$input_type" != *"PE32+ executable (EFI application) Aarch64"* ]]; then
+    echo "unsupported kernel format: $input_type" >&2
+    echo "expected raw ARM64 Image or Alpine EFI-stub vmlinuz" >&2
+    exit 1
+  fi
+
+  # Alpine netboot vmlinuz-lts is an EFI stub that embeds a gzip stream.
+  # Extract and inflate the first gzip stream to recover the raw ARM64 Image.
+  python3 - "$input" "$output" <<'PY'
+import pathlib
+import sys
+import zlib
+
+src = pathlib.Path(sys.argv[1]).read_bytes()
+offset = src.find(b"\x1f\x8b\x08")
+if offset < 0:
+    raise SystemExit("failed to locate gzip payload in EFI-stub kernel")
+
+inflater = zlib.decompressobj(wbits=16 + zlib.MAX_WBITS)
+raw = inflater.decompress(src[offset:])
+if not raw:
+    raise SystemExit("failed to inflate gzip payload from EFI-stub kernel")
+
+pathlib.Path(sys.argv[2]).write_bytes(raw)
+PY
+
+  output_type="$(file -b "$output" 2>/dev/null || true)"
+  if [[ "$output_type" != *"Linux kernel ARM64 boot executable Image"* ]]; then
+    echo "converted kernel is not a raw ARM64 Image: $output_type" >&2
+    exit 1
+  fi
+}
+
 NETBOOT_METADATA_FILE="$(mktemp /tmp/boot-assets-netboot-metadata.XXXXXX)"
 cleanup() {
   rm -f "$NETBOOT_METADATA_FILE"
@@ -163,6 +208,7 @@ extract_member() {
 extract_member "boot/vmlinuz-${FLAVOR}" "$OUT_DIR/vmlinuz-${ARCH}"
 extract_member "boot/initramfs-${FLAVOR}" "$OUT_DIR/initramfs-${ARCH}"
 extract_member "boot/modloop-${FLAVOR}" "$OUT_DIR/modloop-${FLAVOR}"
+convert_vmlinuz_to_raw_image "$OUT_DIR/vmlinuz-${ARCH}" "$OUT_DIR/kernel-${ARCH}"
 
 KERNEL_URL="${NETBOOT_BASE_URL}/vmlinuz-${FLAVOR}"
 INITRAMFS_URL="${NETBOOT_BASE_URL}/initramfs-${FLAVOR}"
@@ -180,7 +226,8 @@ INITRAMFS_URL=${INITRAMFS_URL}
 MODLOOP_URL=${MODLOOP_URL}
 EOF
 
-echo "kernel:    $OUT_DIR/vmlinuz-${ARCH}"
+echo "kernel:    $OUT_DIR/kernel-${ARCH}"
+echo "vmlinuz:   $OUT_DIR/vmlinuz-${ARCH}"
 echo "initramfs: $OUT_DIR/initramfs-${ARCH}"
 echo "modloop:   $OUT_DIR/modloop-${FLAVOR}"
 echo "metadata:  $OUT_DIR/netboot-metadata.env"
