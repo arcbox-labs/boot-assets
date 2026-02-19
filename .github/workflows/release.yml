@@ -211,3 +211,59 @@ jobs:
             dist/manifest.json
           draft: false
           prerelease: ${{ contains(needs.build.outputs.version, 'alpha') || contains(needs.build.outputs.version, 'beta') }}
+
+  # ==========================================================================
+  # Upload to Cloudflare R2 (CDN: dl.arcbox.dev)
+  # ==========================================================================
+  upload-r2:
+    name: Upload to R2
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: boot-assets-release
+          path: dist
+
+      - name: Prepare R2 directory structure
+        run: |
+          VERSION="${{ needs.build.outputs.version }}"
+          TARBALL="${{ needs.build.outputs.tarball }}"
+
+          mkdir -p "r2-staging/v${VERSION}"
+          cp "dist/${TARBALL}" "r2-staging/v${VERSION}/"
+          cp "dist/${TARBALL}.sha256" "r2-staging/v${VERSION}/"
+          cp "dist/manifest.json" "r2-staging/v${VERSION}/"
+
+          # latest.json pointer (lives at bucket root under boot-assets/)
+          printf '{"version":"%s","arm64":{"bundle":"%s"}}\n' \
+            "$VERSION" "$TARBALL" \
+            | python3 -m json.tool > "r2-staging/latest.json"
+
+          echo "=== R2 staging ==="
+          find r2-staging -type f
+
+      - name: Upload to Cloudflare R2
+        uses: ryand56/r2-upload-action@latest
+        with:
+          r2-account-id: ${{ secrets.R2_ACCOUNT_ID }}
+          r2-access-key-id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          r2-bucket: arcbox-boot-assets
+          source-dir: r2-staging
+          destination-dir: boot-assets
+
+      - name: Verify CDN
+        run: |
+          VERSION="${{ needs.build.outputs.version }}"
+          TARBALL="${{ needs.build.outputs.tarball }}"
+          URL="https://dl.arcbox.dev/boot-assets/v${VERSION}/${TARBALL}.sha256"
+
+          sleep 3
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$URL")
+          echo "CDN check: $URL -> HTTP $HTTP_STATUS"
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "::warning::CDN returned HTTP $HTTP_STATUS (may need DNS propagation)"
+          fi
