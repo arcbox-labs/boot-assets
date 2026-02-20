@@ -262,6 +262,18 @@ else
 fi
 log_line ""
 
+# Sync system clock via NTP. The VZ framework virtualised RTC is not
+# automatically read by the Alpine kernel, so the guest clock starts at
+# epoch (1970-01-01). Without a correct clock, TLS cert verification fails.
+# busybox ntpd -q performs a one-shot adjustment and exits.
+log_line "Syncing time via NTP..."
+if /bin/busybox ntpd -q -n -p pool.ntp.org 2>/dev/null; then
+  log_line "  Time: NTP sync ok ($(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo unknown))"
+else
+  log_line "  Time: NTP sync failed (TLS cert verification may fail)"
+fi
+log_line ""
+
 log_line "ArcBox Guest VM starting (kernel: $(/bin/busybox uname -r))"
 log_line "Kernel cmdline: $(/bin/busybox cat /proc/cmdline)"
 
