@@ -146,14 +146,16 @@ mkdir -p "$WORK_DIR/usr/share/udhcpc"
 cat > "$WORK_DIR/usr/share/udhcpc/default.script" <<'UDHCPC_EOF'
 #!/bin/sh
 # udhcpc lease handler: configure interface on DHCP bound/renew events.
+# Alpine initramfs does not have /sbin/ifconfig or /sbin/route; use
+# /bin/busybox applets which are always available at that fixed path.
 case "$1" in
   bound|renew)
-    /sbin/ifconfig "$interface" "$ip" netmask "${subnet:-255.255.255.0}"
-    [ -n "$router" ] && /sbin/route add default gw "$router" dev "$interface" 2>/dev/null || true
+    /bin/busybox ifconfig "$interface" "$ip" netmask "${subnet:-255.255.255.0}"
+    [ -n "$router" ] && /bin/busybox route add default gw "$router" dev "$interface" 2>/dev/null || true
     { for ns in $dns; do printf 'nameserver %s\n' "$ns"; done; } > /etc/resolv.conf
     ;;
   deconfig)
-    /sbin/ifconfig "$interface" 0.0.0.0
+    /bin/busybox ifconfig "$interface" 0.0.0.0
     ;;
 esac
 UDHCPC_EOF
@@ -276,6 +278,18 @@ if run_cmd /bin/busybox mount -t virtiofs arcbox /arcbox; then
 else
   log_line "  VirtioFS mount FAILED"
 fi
+log_line ""
+
+log_line "Network state:"
+/bin/busybox ip addr show >> "$INIT_LOG" 2>&1 || true
+/bin/busybox ip route show >> "$INIT_LOG" 2>&1 || true
+log_line "DNS config:"
+/bin/busybox cat /etc/resolv.conf >> "$INIT_LOG" 2>&1 || true
+log_line ""
+
+# Enable IPv4 forwarding so Docker can route traffic between docker0 and eth0.
+echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
+log_line "IPv4 forwarding: $(/bin/busybox cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo unknown)"
 log_line ""
 
 log_line "Setting up container prerequisites..."
