@@ -278,6 +278,15 @@ else
 fi
 log_line ""
 
+log_line "Setting up container prerequisites..."
+/bin/busybox mkdir -p /sys/fs/cgroup
+if /bin/busybox mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null; then
+  log_line "  cgroup2 mounted at /sys/fs/cgroup"
+else
+  log_line "  cgroup2 mount failed (may already be mounted)"
+fi
+log_line ""
+
 log_line "Loading vsock modules..."
 load_module vsock "kernel/net/vmw_vsock/vsock.ko"
 load_module vmw_vsock_virtio_transport_common "kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko"
