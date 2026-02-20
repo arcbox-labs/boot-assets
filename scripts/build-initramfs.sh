@@ -157,21 +157,17 @@ cat > "$WORK_DIR/init" <<'INIT_EOF'
 /bin/busybox mount -t proc proc /proc
 /bin/busybox mount -t sysfs sysfs /sys
 /bin/busybox mount -t devtmpfs devtmpfs /dev
-/bin/busybox mkdir -p /dev/pts
+/bin/busybox mkdir -p /dev/pts /var/log
 /bin/busybox mount -t devpts devpts /dev/pts
 /bin/busybox hostname arcbox-vm
 
-# Load virtio bus drivers and console before any output so hvc0 works
+# Load virtio bus drivers and console modules.
 /sbin/modprobe virtio_pci 2>/dev/null
 /sbin/modprobe virtio_mmio 2>/dev/null
 /sbin/modprobe virtio_console 2>/dev/null
-
-# Reconnect stdin/stdout/stderr to /dev/console (created by devtmpfs above)
-exec </dev/console >/dev/console 2>&1
+/sbin/modprobe virtio_balloon 2>/dev/null
 
 echo "ArcBox Guest VM starting (kernel: $(/bin/busybox uname -r))"
-
-/sbin/modprobe virtio_balloon 2>/dev/null
 
 echo "Loading fuse/virtiofs modules..."
 /sbin/modprobe fuse 2>/dev/null && echo "  Loaded: fuse" || echo "  Failed: fuse"
@@ -188,13 +184,31 @@ fi
 echo ""
 
 echo "Loading vsock modules..."
+/sbin/modprobe vsock 2>/dev/null && echo "  Loaded: vsock" || echo "  Failed: vsock"
+/sbin/modprobe vmw_vsock_virtio_transport_common 2>/dev/null && echo "  Loaded: vmw_vsock_virtio_transport_common" || echo "  Failed: vmw_vsock_virtio_transport_common"
 /sbin/modprobe vmw_vsock_virtio_transport 2>/dev/null && echo "  Loaded: vmw_vsock_virtio_transport" || echo "  Failed: vmw_vsock_virtio_transport"
 
-/bin/busybox sleep 0.5
+if [ -e /dev/vsock ]; then
+  echo "  vsock device ready: /dev/vsock"
+else
+  echo "  vsock device missing: /dev/vsock"
+fi
+
+/bin/busybox sleep 1
+
+AGENT_LOG="/var/log/arcbox-agent.log"
+if /bin/busybox grep -q " /arcbox " /proc/mounts; then
+  AGENT_LOG="/arcbox/agent.log"
+fi
 
 echo "Starting arcbox-agent on vsock port 1024..."
-echo "Agent logs: /arcbox/agent.log"
-exec /sbin/arcbox-agent >> /arcbox/agent.log 2>&1
+echo "Agent logs: $AGENT_LOG"
+if /bin/busybox touch "$AGENT_LOG" 2>/dev/null; then
+  exec /sbin/arcbox-agent >> "$AGENT_LOG" 2>&1
+else
+  echo "Agent log path not writable, falling back to console output"
+  exec /sbin/arcbox-agent
+fi
 INIT_EOF
 chmod 755 "$WORK_DIR/init"
 
