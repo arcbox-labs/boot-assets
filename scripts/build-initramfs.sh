@@ -129,27 +129,6 @@ if [[ -d "$FUSE_SRC" ]]; then
   cp "$FUSE_SRC/virtiofs.ko" "$WORK_DIR/lib/modules/$KERNEL_VERSION/kernel/fs/fuse/" 2>/dev/null || true
 fi
 
-# Remove stale binary index files from the base initramfs so modprobe uses
-# our text modules.dep which includes the additional module entries.
-rm -f "$WORK_DIR/lib/modules/$KERNEL_VERSION"/modules.*.bin
-
-touch "$WORK_DIR/lib/modules/$KERNEL_VERSION/modules.dep"
-cat >> "$WORK_DIR/lib/modules/$KERNEL_VERSION/modules.dep" <<'EOF'
-kernel/drivers/virtio/virtio.ko:
-kernel/drivers/virtio/virtio_ring.ko:
-kernel/drivers/virtio/virtio_pci_modern_dev.ko:
-kernel/drivers/virtio/virtio_pci_legacy_dev.ko:
-kernel/drivers/virtio/virtio_pci.ko: kernel/drivers/virtio/virtio_pci_legacy_dev.ko kernel/drivers/virtio/virtio_pci_modern_dev.ko kernel/drivers/virtio/virtio.ko kernel/drivers/virtio/virtio_ring.ko
-kernel/drivers/virtio/virtio_mmio.ko: kernel/drivers/virtio/virtio.ko kernel/drivers/virtio/virtio_ring.ko
-kernel/drivers/virtio/virtio_balloon.ko: kernel/drivers/virtio/virtio.ko kernel/drivers/virtio/virtio_ring.ko
-kernel/drivers/char/virtio_console.ko: kernel/drivers/virtio/virtio.ko kernel/drivers/virtio/virtio_ring.ko
-kernel/net/vmw_vsock/vsock.ko:
-kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko: kernel/net/vmw_vsock/vsock.ko
-kernel/net/vmw_vsock/vmw_vsock_virtio_transport.ko: kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko
-kernel/fs/fuse/fuse.ko:
-kernel/fs/fuse/virtiofs.ko: kernel/drivers/virtio/virtio.ko kernel/drivers/virtio/virtio_ring.ko kernel/fs/fuse/fuse.ko
-EOF
-
 cat > "$WORK_DIR/init" <<'INIT_EOF'
 #!/bin/sh
 # ArcBox init script
@@ -157,41 +136,114 @@ cat > "$WORK_DIR/init" <<'INIT_EOF'
 /bin/busybox mount -t proc proc /proc
 /bin/busybox mount -t sysfs sysfs /sys
 /bin/busybox mount -t devtmpfs devtmpfs /dev
-/bin/busybox mkdir -p /dev/pts /var/log
+/bin/busybox mkdir -p /dev/pts /var/log /tmp
 /bin/busybox mount -t devpts devpts /dev/pts
 /bin/busybox hostname arcbox-vm
 
-# Load virtio bus drivers and console modules.
-/sbin/modprobe virtio_pci 2>/dev/null
-/sbin/modprobe virtio_mmio 2>/dev/null
-/sbin/modprobe virtio_console 2>/dev/null
-/sbin/modprobe virtio_balloon 2>/dev/null
+INIT_LOG="/var/log/arcbox-init.log"
+/bin/busybox touch "$INIT_LOG"
 
-echo "ArcBox Guest VM starting (kernel: $(/bin/busybox uname -r))"
+log_line() {
+  msg="$*"
+  echo "$msg"
+  echo "$msg" >> "$INIT_LOG"
+}
 
-echo "Loading fuse/virtiofs modules..."
-/sbin/modprobe fuse 2>/dev/null && echo "  Loaded: fuse" || echo "  Failed: fuse"
-/sbin/modprobe virtiofs 2>/dev/null && echo "  Loaded: virtiofs" || echo "  Failed: virtiofs"
-echo ""
+run_cmd() {
+  out="/tmp/arcbox-cmd.$$.log"
+  "$@" > "$out" 2>&1
+  rc=$?
+  if [ -s "$out" ]; then
+    /bin/busybox cat "$out" >> "$INIT_LOG"
+    if [ "$rc" -ne 0 ]; then
+      /bin/busybox cat "$out"
+    fi
+  fi
+  /bin/busybox rm -f "$out"
+  return "$rc"
+}
 
-echo "Mounting VirtioFS..."
-/bin/busybox mkdir -p /arcbox
-if /bin/busybox mount -t virtiofs arcbox /arcbox; then
-  echo "  VirtioFS mounted at /arcbox"
-else
-  echo "  VirtioFS mount FAILED"
+MODULE_DIR="/lib/modules/$(/bin/busybox uname -r)"
+
+load_module() {
+  name="$1"
+  relpath="$2"
+  modpath="$MODULE_DIR/$relpath"
+
+  if run_cmd /sbin/modprobe "$name"; then
+    log_line "  Loaded: $name"
+    return 0
+  fi
+
+  if [ -f "$modpath" ] && run_cmd /bin/busybox insmod "$modpath"; then
+    log_line "  Loaded: $name (insmod)"
+    return 0
+  fi
+
+  log_line "  Failed: $name"
+  return 1
+}
+
+log_line "Loading virtio core modules..."
+load_module virtio "kernel/drivers/virtio/virtio.ko"
+load_module virtio_ring "kernel/drivers/virtio/virtio_ring.ko"
+load_module virtio_pci_legacy_dev "kernel/drivers/virtio/virtio_pci_legacy_dev.ko"
+load_module virtio_pci_modern_dev "kernel/drivers/virtio/virtio_pci_modern_dev.ko"
+load_module virtio_pci "kernel/drivers/virtio/virtio_pci.ko"
+load_module virtio_mmio "kernel/drivers/virtio/virtio_mmio.ko"
+load_module virtio_console "kernel/drivers/char/virtio_console.ko"
+load_module virtio_balloon "kernel/drivers/virtio/virtio_balloon.ko"
+log_line ""
+
+# Rebind stdio to hvc0 when available (Virtualization.framework virtio console).
+i=0
+while [ "$i" -lt 20 ]; do
+  if [ -c /dev/hvc0 ]; then
+    break
+  fi
+  i=$((i + 1))
+  /bin/busybox sleep 0.1
+done
+if [ -c /dev/hvc0 ]; then
+  exec </dev/hvc0 >/dev/hvc0 2>&1
 fi
-echo ""
 
-echo "Loading vsock modules..."
-/sbin/modprobe vsock 2>/dev/null && echo "  Loaded: vsock" || echo "  Failed: vsock"
-/sbin/modprobe vmw_vsock_virtio_transport_common 2>/dev/null && echo "  Loaded: vmw_vsock_virtio_transport_common" || echo "  Failed: vmw_vsock_virtio_transport_common"
-/sbin/modprobe vmw_vsock_virtio_transport 2>/dev/null && echo "  Loaded: vmw_vsock_virtio_transport" || echo "  Failed: vmw_vsock_virtio_transport"
+log_line "ArcBox Guest VM starting (kernel: $(/bin/busybox uname -r))"
+log_line "Kernel cmdline: $(/bin/busybox cat /proc/cmdline)"
+
+log_line "Loading fuse/virtiofs modules..."
+load_module fuse "kernel/fs/fuse/fuse.ko"
+load_module virtiofs "kernel/fs/fuse/virtiofs.ko"
+log_line ""
+
+log_line "Mounting VirtioFS..."
+/bin/busybox mkdir -p /arcbox
+if run_cmd /bin/busybox mount -t virtiofs arcbox /arcbox; then
+  log_line "  VirtioFS mounted at /arcbox"
+  if /bin/busybox touch /arcbox/init.log 2>/dev/null; then
+    /bin/busybox cat "$INIT_LOG" >> /arcbox/init.log 2>/dev/null || true
+    INIT_LOG="/arcbox/init.log"
+    log_line "  Init logs: $INIT_LOG"
+  fi
+else
+  log_line "  VirtioFS mount FAILED"
+fi
+log_line ""
+
+log_line "Loading vsock modules..."
+load_module vsock "kernel/net/vmw_vsock/vsock.ko"
+load_module vmw_vsock_virtio_transport_common "kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko"
+load_module vmw_vsock_virtio_transport "kernel/net/vmw_vsock/vmw_vsock_virtio_transport.ko"
 
 if [ -e /dev/vsock ]; then
-  echo "  vsock device ready: /dev/vsock"
+  log_line "  vsock device ready: /dev/vsock"
 else
-  echo "  vsock device missing: /dev/vsock"
+  log_line "  vsock device missing: /dev/vsock"
+fi
+
+if [ -f /proc/modules ]; then
+  log_line "Loaded vsock-related modules:"
+  /bin/busybox grep -E 'vsock|virtio' /proc/modules >> "$INIT_LOG" 2>&1 || true
 fi
 
 /bin/busybox sleep 1
@@ -201,14 +253,21 @@ if /bin/busybox grep -q " /arcbox " /proc/mounts; then
   AGENT_LOG="/arcbox/agent.log"
 fi
 
-echo "Starting arcbox-agent on vsock port 1024..."
-echo "Agent logs: $AGENT_LOG"
+log_line "Starting arcbox-agent on vsock port 1024..."
+log_line "Agent logs: $AGENT_LOG"
 if /bin/busybox touch "$AGENT_LOG" 2>/dev/null; then
-  exec /sbin/arcbox-agent >> "$AGENT_LOG" 2>&1
+  :
 else
-  echo "Agent log path not writable, falling back to console output"
-  exec /sbin/arcbox-agent
+  log_line "Agent log path not writable, falling back to init log"
+  AGENT_LOG="$INIT_LOG"
 fi
+
+while true; do
+  /sbin/arcbox-agent >> "$AGENT_LOG" 2>&1
+  rc=$?
+  log_line "arcbox-agent exited (code=$rc), restarting in 1s"
+  /bin/busybox sleep 1
+done
 INIT_EOF
 chmod 755 "$WORK_DIR/init"
 
