@@ -244,6 +244,10 @@ if [ -c /dev/hvc0 ]; then
   exec </dev/hvc0 >/dev/hvc0 2>&1
 fi
 
+# Bring up loopback first; required for processes that bind to 127.0.0.1
+# (e.g. containerd CRI streaming server).
+/bin/busybox ip link set lo up 2>/dev/null || true
+
 # Configure eth0 via DHCP (VZ framework NAT provides a DHCP server at 192.168.64.1).
 log_line "Configuring network..."
 /bin/busybox ip link set eth0 up 2>/dev/null
