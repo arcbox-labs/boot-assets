@@ -185,37 +185,41 @@ copy_module "$MODS_SRC/drivers/net"   "$MODS_DST/drivers/net"   veth.ko
 # dockerd uses iptables to install POSTROUTING MASQUERADE rules that allow
 # container traffic (172.17.0.0/16) to reach the internet via eth0.
 #
-# Full dependency chain (load order in Stage 1 init):
-#   crc32c_generic → libcrc32c → nf_defrag_ipv4/v6 → nf_conntrack
-#     → x_tables → nf_nat → ip_tables → iptable_filter, iptable_nat
+# Correct module paths verified against Alpine 6.12.x modloop modules.dep:
+#   nf_defrag_ipv4.ko → net/ipv4/netfilter/  (NOT net/netfilter/)
+#   nf_defrag_ipv6.ko → net/ipv6/netfilter/  (NOT net/netfilter/)
 #
-# nf_conntrack depends on libcrc32c (for CRC32c checksums).
-# libcrc32c depends on crc32c_generic (software CRC32c implementation).
+# Dependency chain from modules.dep:
+#   libcrc32c    (no deps; crc32c crypto is built into the Alpine LTS kernel)
+#   nf_defrag_ipv4/v6 (no deps)
+#   nf_conntrack → nf_defrag_ipv6, nf_defrag_ipv4, libcrc32c
+#   nf_nat       → nf_conntrack + its transitive deps
+#   iptable_nat  → ip_tables, nf_nat, x_tables + transitive deps
 MODS_NETFILTER_SRC="$MODLOOP_EXTRACT/modules/$KERNEL_VERSION/kernel"
 MODS_NETFILTER_DST="$WORK_DIR/lib/modules/$KERNEL_VERSION/kernel"
-copy_module "$MODS_NETFILTER_SRC/crypto"            "$MODS_NETFILTER_DST/crypto"            crc32c_generic.ko
-copy_module "$MODS_NETFILTER_SRC/lib"               "$MODS_NETFILTER_DST/lib"               libcrc32c.ko
-copy_module "$MODS_SRC/net/netfilter"               "$MODS_DST/net/netfilter"               nf_defrag_ipv4.ko
-copy_module "$MODS_SRC/net/netfilter"               "$MODS_DST/net/netfilter"               nf_defrag_ipv6.ko
-copy_module "$MODS_SRC/net/netfilter"               "$MODS_DST/net/netfilter"               nf_conntrack.ko
-copy_module "$MODS_SRC/net/netfilter"               "$MODS_DST/net/netfilter"               x_tables.ko
-copy_module "$MODS_SRC/net/netfilter"               "$MODS_DST/net/netfilter"               nf_nat.ko
-copy_module "$MODS_SRC/net/netfilter"               "$MODS_DST/net/netfilter"               nf_reject_ipv4.ko
-copy_module "$MODS_SRC/net/ipv4/netfilter"          "$MODS_DST/net/ipv4/netfilter"          ip_tables.ko
-copy_module "$MODS_SRC/net/ipv4/netfilter"          "$MODS_DST/net/ipv4/netfilter"          iptable_filter.ko
-copy_module "$MODS_SRC/net/ipv4/netfilter"          "$MODS_DST/net/ipv4/netfilter"          iptable_nat.ko
+copy_module "$MODS_NETFILTER_SRC/lib"                "$MODS_NETFILTER_DST/lib"                libcrc32c.ko
+copy_module "$MODS_NETFILTER_SRC/net/ipv4/netfilter" "$MODS_NETFILTER_DST/net/ipv4/netfilter" nf_defrag_ipv4.ko
+copy_module "$MODS_NETFILTER_SRC/net/ipv6/netfilter" "$MODS_NETFILTER_DST/net/ipv6/netfilter" nf_defrag_ipv6.ko
+copy_module "$MODS_SRC/net/netfilter"                "$MODS_DST/net/netfilter"                nf_conntrack.ko
+copy_module "$MODS_SRC/net/netfilter"                "$MODS_DST/net/netfilter"                x_tables.ko
+copy_module "$MODS_SRC/net/netfilter"                "$MODS_DST/net/netfilter"                nf_nat.ko
+copy_module "$MODS_SRC/net/netfilter"                "$MODS_DST/net/netfilter"                nf_reject_ipv4.ko
+copy_module "$MODS_SRC/net/ipv4/netfilter"           "$MODS_DST/net/ipv4/netfilter"           ip_tables.ko
+copy_module "$MODS_SRC/net/ipv4/netfilter"           "$MODS_DST/net/ipv4/netfilter"           iptable_filter.ko
+copy_module "$MODS_SRC/net/ipv4/netfilter"           "$MODS_DST/net/ipv4/netfilter"           iptable_nat.ko
 
-# Regenerate modules.dep for the modules we have in the initramfs.
-# This allows modprobe to correctly resolve dependencies (e.g., nf_conntrack
-# depends on libcrc32c). Without a correct modules.dep, modprobe falls back
-# to insmod which cannot handle symbol dependencies between modules.
-if command -v depmod >/dev/null 2>&1; then
-  depmod -a -b "$WORK_DIR" "$KERNEL_VERSION" 2>/dev/null \
-    && echo "modules.dep regenerated for $KERNEL_VERSION" \
-    || echo "depmod failed (continuing; modprobe may not resolve all deps)" >&2
-else
-  echo "depmod not found (install kmod); modprobe dep resolution will be limited" >&2
-fi
+# Copy modules.dep and modules.alias from the modloop so that modprobe in
+# Stage 1 can automatically resolve module dependencies. Without this,
+# modprobe cannot find the dep chain and falls back to insmod, which fails
+# when symbols are not yet present (e.g., nf_conntrack needs nf_defrag_ipv4).
+echo "copy modules.dep from modloop"
+mkdir -p "$WORK_DIR/lib/modules/$KERNEL_VERSION"
+cp "$MODLOOP_EXTRACT/modules/$KERNEL_VERSION/modules.dep" \
+   "$WORK_DIR/lib/modules/$KERNEL_VERSION/modules.dep" 2>/dev/null \
+   && echo "modules.dep copied" \
+   || echo "warning: modules.dep not found in modloop" >&2
+cp "$MODLOOP_EXTRACT/modules/$KERNEL_VERSION/modules.alias" \
+   "$WORK_DIR/lib/modules/$KERNEL_VERSION/modules.alias" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # Write the Stage 1 /init script.
@@ -294,15 +298,16 @@ load_ko vmw_vsock_virtio_transport \
                            "kernel/net/vmw_vsock/vmw_vsock_virtio_transport.ko"
 
 # Netfilter/iptables: loaded before bridge because br_netfilter depends on
-# nf_conntrack. Load in strict dependency order so insmod fallback also works.
-# If any module is built into the kernel, load_ko silently succeeds (return 0).
+# nf_conntrack. Load in strict dependency order; the modules.dep copied from
+# the modloop allows modprobe to automatically resolve transitive deps.
 #
-# nf_conntrack requires the crc32c symbol from libcrc32c.ko.
-# libcrc32c.ko requires crc32c_generic.ko (software CRC32c implementation).
-load_ko crc32c_generic "kernel/crypto/crc32c_generic.ko"
+# Correct paths (verified against Alpine 6.12.x modloop):
+#   nf_defrag_ipv4 → net/ipv4/netfilter/  (NOT net/netfilter/)
+#   nf_defrag_ipv6 → net/ipv6/netfilter/  (NOT net/netfilter/)
+# libcrc32c has no module deps (crc32c is built into the Alpine LTS kernel).
 load_ko libcrc32c      "kernel/lib/libcrc32c.ko"
-load_ko nf_defrag_ipv4 "kernel/net/netfilter/nf_defrag_ipv4.ko"
-load_ko nf_defrag_ipv6 "kernel/net/netfilter/nf_defrag_ipv6.ko"
+load_ko nf_defrag_ipv4 "kernel/net/ipv4/netfilter/nf_defrag_ipv4.ko"
+load_ko nf_defrag_ipv6 "kernel/net/ipv6/netfilter/nf_defrag_ipv6.ko"
 load_ko nf_conntrack   "kernel/net/netfilter/nf_conntrack.ko"
 load_ko x_tables       "kernel/net/netfilter/x_tables.ko"
 load_ko nf_nat         "kernel/net/netfilter/nf_nat.ko"
