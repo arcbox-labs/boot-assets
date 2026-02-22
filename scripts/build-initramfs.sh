@@ -172,6 +172,15 @@ copy_module "$MODS_SRC/net/vmw_vsock" "$MODS_DST/net/vmw_vsock" vsock.ko
 copy_module "$MODS_SRC/net/vmw_vsock" "$MODS_DST/net/vmw_vsock" vmw_vsock_virtio_transport_common.ko
 copy_module "$MODS_SRC/net/vmw_vsock" "$MODS_DST/net/vmw_vsock" vmw_vsock_virtio_transport.ko
 
+# Docker networking: bridge, br_netfilter, veth.
+# These must be loaded in Stage 1 because after switch_root the Stage 2
+# rootfs (squashfs overlay) has no /lib/modules, so modprobe cannot load
+# new modules. Without the bridge module dockerd fails with:
+#   "Failed to create bridge docker0 via netlink: operation not supported"
+copy_module "$MODS_SRC/net/bridge"    "$MODS_DST/net/bridge"    bridge.ko
+copy_module "$MODS_SRC/net/bridge"    "$MODS_DST/net/bridge"    br_netfilter.ko
+copy_module "$MODS_SRC/drivers/net"   "$MODS_DST/drivers/net"   veth.ko
+
 # ---------------------------------------------------------------------------
 # Write the Stage 1 /init script.
 # This script is intentionally minimal: it only bootstraps to rootfs.squashfs.
@@ -247,6 +256,14 @@ load_ko vmw_vsock_virtio_transport_common \
                            "kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko"
 load_ko vmw_vsock_virtio_transport \
                            "kernel/net/vmw_vsock/vmw_vsock_virtio_transport.ko"
+
+# Docker networking: loaded here because Stage 2 has no /lib/modules.
+# bridge: lets dockerd create the docker0 bridge interface via netlink.
+# br_netfilter: bridge netfilter hooks (iptables/nftables on bridged traffic).
+# veth: virtual ethernet pairs used for container network namespaces.
+load_ko bridge             "kernel/net/bridge/bridge.ko"
+load_ko br_netfilter       "kernel/net/bridge/br_netfilter.ko"
+load_ko veth               "kernel/drivers/net/veth.ko"
 
 # ---------------------------------------------------------------------------
 # Mount VirtioFS to access rootfs.squashfs.
