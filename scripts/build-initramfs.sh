@@ -184,16 +184,38 @@ copy_module "$MODS_SRC/drivers/net"   "$MODS_DST/drivers/net"   veth.ko
 # Netfilter/iptables modules: required for container networking (MASQUERADE/NAT).
 # dockerd uses iptables to install POSTROUTING MASQUERADE rules that allow
 # container traffic (172.17.0.0/16) to reach the internet via eth0.
-# Dependency order: defrag → conntrack → x_tables → nf_nat → ip_tables → iptable_*
-copy_module "$MODS_SRC/net/netfilter"       "$MODS_DST/net/netfilter"       nf_defrag_ipv4.ko
-copy_module "$MODS_SRC/net/netfilter"       "$MODS_DST/net/netfilter"       nf_defrag_ipv6.ko
-copy_module "$MODS_SRC/net/netfilter"       "$MODS_DST/net/netfilter"       nf_conntrack.ko
-copy_module "$MODS_SRC/net/netfilter"       "$MODS_DST/net/netfilter"       x_tables.ko
-copy_module "$MODS_SRC/net/netfilter"       "$MODS_DST/net/netfilter"       nf_nat.ko
-copy_module "$MODS_SRC/net/netfilter"       "$MODS_DST/net/netfilter"       nf_reject_ipv4.ko
-copy_module "$MODS_SRC/net/ipv4/netfilter"  "$MODS_DST/net/ipv4/netfilter"  ip_tables.ko
-copy_module "$MODS_SRC/net/ipv4/netfilter"  "$MODS_DST/net/ipv4/netfilter"  iptable_filter.ko
-copy_module "$MODS_SRC/net/ipv4/netfilter"  "$MODS_DST/net/ipv4/netfilter"  iptable_nat.ko
+#
+# Full dependency chain (load order in Stage 1 init):
+#   crc32c_generic → libcrc32c → nf_defrag_ipv4/v6 → nf_conntrack
+#     → x_tables → nf_nat → ip_tables → iptable_filter, iptable_nat
+#
+# nf_conntrack depends on libcrc32c (for CRC32c checksums).
+# libcrc32c depends on crc32c_generic (software CRC32c implementation).
+MODS_NETFILTER_SRC="$MODLOOP_EXTRACT/modules/$KERNEL_VERSION/kernel"
+MODS_NETFILTER_DST="$WORK_DIR/lib/modules/$KERNEL_VERSION/kernel"
+copy_module "$MODS_NETFILTER_SRC/crypto"            "$MODS_NETFILTER_DST/crypto"            crc32c_generic.ko
+copy_module "$MODS_NETFILTER_SRC/lib"               "$MODS_NETFILTER_DST/lib"               libcrc32c.ko
+copy_module "$MODS_SRC/net/netfilter"               "$MODS_DST/net/netfilter"               nf_defrag_ipv4.ko
+copy_module "$MODS_SRC/net/netfilter"               "$MODS_DST/net/netfilter"               nf_defrag_ipv6.ko
+copy_module "$MODS_SRC/net/netfilter"               "$MODS_DST/net/netfilter"               nf_conntrack.ko
+copy_module "$MODS_SRC/net/netfilter"               "$MODS_DST/net/netfilter"               x_tables.ko
+copy_module "$MODS_SRC/net/netfilter"               "$MODS_DST/net/netfilter"               nf_nat.ko
+copy_module "$MODS_SRC/net/netfilter"               "$MODS_DST/net/netfilter"               nf_reject_ipv4.ko
+copy_module "$MODS_SRC/net/ipv4/netfilter"          "$MODS_DST/net/ipv4/netfilter"          ip_tables.ko
+copy_module "$MODS_SRC/net/ipv4/netfilter"          "$MODS_DST/net/ipv4/netfilter"          iptable_filter.ko
+copy_module "$MODS_SRC/net/ipv4/netfilter"          "$MODS_DST/net/ipv4/netfilter"          iptable_nat.ko
+
+# Regenerate modules.dep for the modules we have in the initramfs.
+# This allows modprobe to correctly resolve dependencies (e.g., nf_conntrack
+# depends on libcrc32c). Without a correct modules.dep, modprobe falls back
+# to insmod which cannot handle symbol dependencies between modules.
+if command -v depmod >/dev/null 2>&1; then
+  depmod -a -b "$WORK_DIR" "$KERNEL_VERSION" 2>/dev/null \
+    && echo "modules.dep regenerated for $KERNEL_VERSION" \
+    || echo "depmod failed (continuing; modprobe may not resolve all deps)" >&2
+else
+  echo "depmod not found (install kmod); modprobe dep resolution will be limited" >&2
+fi
 
 # ---------------------------------------------------------------------------
 # Write the Stage 1 /init script.
@@ -272,17 +294,22 @@ load_ko vmw_vsock_virtio_transport \
                            "kernel/net/vmw_vsock/vmw_vsock_virtio_transport.ko"
 
 # Netfilter/iptables: loaded before bridge because br_netfilter depends on
-# nf_conntrack. Load in dependency order so insmod fallback also works.
+# nf_conntrack. Load in strict dependency order so insmod fallback also works.
 # If any module is built into the kernel, load_ko silently succeeds (return 0).
-load_ko nf_defrag_ipv4  "kernel/net/netfilter/nf_defrag_ipv4.ko"
-load_ko nf_defrag_ipv6  "kernel/net/netfilter/nf_defrag_ipv6.ko"
-load_ko nf_conntrack    "kernel/net/netfilter/nf_conntrack.ko"
-load_ko x_tables        "kernel/net/netfilter/x_tables.ko"
-load_ko nf_nat          "kernel/net/netfilter/nf_nat.ko"
-load_ko nf_reject_ipv4  "kernel/net/netfilter/nf_reject_ipv4.ko"
-load_ko ip_tables       "kernel/net/ipv4/netfilter/ip_tables.ko"
-load_ko iptable_filter  "kernel/net/ipv4/netfilter/iptable_filter.ko"
-load_ko iptable_nat     "kernel/net/ipv4/netfilter/iptable_nat.ko"
+#
+# nf_conntrack requires the crc32c symbol from libcrc32c.ko.
+# libcrc32c.ko requires crc32c_generic.ko (software CRC32c implementation).
+load_ko crc32c_generic "kernel/crypto/crc32c_generic.ko"
+load_ko libcrc32c      "kernel/lib/libcrc32c.ko"
+load_ko nf_defrag_ipv4 "kernel/net/netfilter/nf_defrag_ipv4.ko"
+load_ko nf_defrag_ipv6 "kernel/net/netfilter/nf_defrag_ipv6.ko"
+load_ko nf_conntrack   "kernel/net/netfilter/nf_conntrack.ko"
+load_ko x_tables       "kernel/net/netfilter/x_tables.ko"
+load_ko nf_nat         "kernel/net/netfilter/nf_nat.ko"
+load_ko nf_reject_ipv4 "kernel/net/netfilter/nf_reject_ipv4.ko"
+load_ko ip_tables      "kernel/net/ipv4/netfilter/ip_tables.ko"
+load_ko iptable_filter "kernel/net/ipv4/netfilter/iptable_filter.ko"
+load_ko iptable_nat    "kernel/net/ipv4/netfilter/iptable_nat.ko"
 
 # Docker networking: loaded here because Stage 2 has no /lib/modules.
 # bridge: lets dockerd create the docker0 bridge interface via netlink.
