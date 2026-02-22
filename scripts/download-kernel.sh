@@ -7,6 +7,7 @@ ARCH="arm64"
 ALPINE_VERSION="3.21"
 FLAVOR="lts"
 OUT_DIR=""
+DOWNLOAD_MINIROOTFS="1"
 
 usage() {
   cat <<'EOF'
@@ -17,6 +18,7 @@ Options:
   --alpine-version <version>  Alpine release version (default: 3.21)
   --flavor <flavor>           Netboot flavor suffix (default: lts)
   --out-dir <dir>             Output directory
+  --no-minirootfs             Skip Alpine minirootfs download
 EOF
 }
 
@@ -37,6 +39,10 @@ while [[ $# -gt 0 ]]; do
     --out-dir)
       OUT_DIR="$2"
       shift 2
+      ;;
+    --no-minirootfs)
+      DOWNLOAD_MINIROOTFS="0"
+      shift
       ;;
     -h|--help)
       usage
@@ -131,9 +137,38 @@ trap cleanup EXIT
 
 download_file "$LATEST_RELEASES_URL" "$NETBOOT_METADATA_FILE"
 
+# Parse netboot bundle metadata.
 NETBOOT_VERSION=""
 NETBOOT_FILE=""
 NETBOOT_SHA256=""
+
+# Parse minirootfs metadata (used by build-rootfs.sh for Stage 2 rootfs).
+MINIROOTFS_VERSION=""
+MINIROOTFS_FILE=""
+MINIROOTFS_SHA256=""
+
+parse_releases_yaml() {
+  local target_flavor="$1"
+  awk -v flavor="$target_flavor" '
+function emit() {
+  if (cur_flavor == flavor) {
+    print "version=" cur_version;
+    print "file=" cur_file;
+    print "sha256=" cur_sha256;
+  }
+}
+/^-/ {
+  emit();
+  cur_flavor = ""; cur_version = ""; cur_file = ""; cur_sha256 = "";
+  next;
+}
+/^[[:space:]]+flavor:/ { cur_flavor = $2; next }
+/^[[:space:]]+version:/ { cur_version = $2; next }
+/^[[:space:]]+file:/ { cur_file = $2; next }
+/^[[:space:]]+sha256:/ { cur_sha256 = $2; next }
+END { emit() }
+' "$NETBOOT_METADATA_FILE"
+}
 
 while IFS='=' read -r key value; do
   case "$key" in
@@ -141,30 +176,15 @@ while IFS='=' read -r key value; do
     file) NETBOOT_FILE="$value" ;;
     sha256) NETBOOT_SHA256="$value" ;;
   esac
-done < <(
-  awk '
-function emit() {
-  if (flavor == "alpine-netboot") {
-    print "version=" version;
-    print "file=" file;
-    print "sha256=" sha256;
-  }
-}
-/^-/ {
-  emit();
-  flavor = "";
-  version = "";
-  file = "";
-  sha256 = "";
-  next;
-}
-/^[[:space:]]+flavor:/ { flavor = $2; next }
-/^[[:space:]]+version:/ { version = $2; next }
-/^[[:space:]]+file:/ { file = $2; next }
-/^[[:space:]]+sha256:/ { sha256 = $2; next }
-END { emit() }
-' "$NETBOOT_METADATA_FILE"
-)
+done < <(parse_releases_yaml "alpine-netboot")
+
+while IFS='=' read -r key value; do
+  case "$key" in
+    version) MINIROOTFS_VERSION="$value" ;;
+    file) MINIROOTFS_FILE="$value" ;;
+    sha256) MINIROOTFS_SHA256="$value" ;;
+  esac
+done < <(parse_releases_yaml "alpine-minirootfs")
 
 if [[ -z "$NETBOOT_VERSION" || -z "$NETBOOT_FILE" || -z "$NETBOOT_SHA256" ]]; then
   echo "failed to resolve alpine-netboot metadata from: $LATEST_RELEASES_URL" >&2
@@ -225,6 +245,48 @@ KERNEL_URL=${KERNEL_URL}
 INITRAMFS_URL=${INITRAMFS_URL}
 MODLOOP_URL=${MODLOOP_URL}
 EOF
+
+# ---------------------------------------------------------------------------
+# Download Alpine minirootfs (used by build-rootfs.sh to construct Stage 2
+# rootfs.squashfs).
+# ---------------------------------------------------------------------------
+if [[ "$DOWNLOAD_MINIROOTFS" == "1" ]]; then
+  if [[ -z "$MINIROOTFS_FILE" || -z "$MINIROOTFS_SHA256" ]]; then
+    echo "warning: could not resolve alpine-minirootfs metadata, skipping" >&2
+  else
+    MINIROOTFS_URL="${RELEASE_BASE_URL}/${MINIROOTFS_FILE}"
+    MINIROOTFS_TARBALL="$OUT_DIR/alpine-minirootfs.tar.gz"
+
+    if [[ -f "$MINIROOTFS_TARBALL" ]]; then
+      CURRENT_SHA256="$(sha256_file "$MINIROOTFS_TARBALL")"
+      if [[ "$CURRENT_SHA256" == "$MINIROOTFS_SHA256" ]]; then
+        echo "skip (cached minirootfs): $MINIROOTFS_TARBALL"
+      else
+        echo "cached minirootfs checksum mismatch, re-downloading"
+        rm -f "$MINIROOTFS_TARBALL"
+        download_file "$MINIROOTFS_URL" "$MINIROOTFS_TARBALL"
+      fi
+    else
+      download_file "$MINIROOTFS_URL" "$MINIROOTFS_TARBALL"
+    fi
+
+    CURRENT_SHA256="$(sha256_file "$MINIROOTFS_TARBALL")"
+    if [[ "$CURRENT_SHA256" != "$MINIROOTFS_SHA256" ]]; then
+      echo "minirootfs checksum mismatch: expected $MINIROOTFS_SHA256, got $CURRENT_SHA256" >&2
+      exit 1
+    fi
+    echo "verified minirootfs sha256: $CURRENT_SHA256"
+
+    # Append minirootfs metadata to the env file.
+    cat >> "$OUT_DIR/netboot-metadata.env" <<EOF
+MINIROOTFS_VERSION=${MINIROOTFS_VERSION}
+MINIROOTFS_FILE=${MINIROOTFS_FILE}
+MINIROOTFS_URL=${MINIROOTFS_URL}
+MINIROOTFS_SHA256=${MINIROOTFS_SHA256}
+EOF
+    echo "minirootfs: $MINIROOTFS_TARBALL"
+  fi
+fi
 
 echo "kernel:    $OUT_DIR/kernel-${ARCH}"
 echo "vmlinuz:   $OUT_DIR/vmlinuz-${ARCH}"
