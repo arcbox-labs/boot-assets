@@ -216,6 +216,19 @@ load_module() {
   return 1
 }
 
+# Bind-mount / over itself so pivot_root has a valid mnt_parent.
+# The Alpine initramfs rootfs type has mnt->mnt_parent == mnt (self-referential),
+# causing pivot_root(2) to fail with EINVAL because mnt_has_parent() returns false.
+# A bind mount creates a new mount entry at the same path whose mnt_parent points
+# to the original rootfs (a distinct object), satisfying the kernel check.
+# Container OCI runtimes (youki, runc) require this to set up the container rootfs.
+if /bin/busybox mount -o bind / /; then
+  log_line "Root bind-mount: ok"
+else
+  log_line "Root bind-mount: failed (rc=$?), pivot_root may fail in containers"
+fi
+log_line ""
+
 log_line "Loading virtio core modules..."
 load_module virtio "kernel/drivers/virtio/virtio.ko"
 load_module virtio_ring "kernel/drivers/virtio/virtio_ring.ko"
@@ -266,8 +279,16 @@ log_line ""
 # automatically read by the Alpine kernel, so the guest clock starts at
 # epoch (1970-01-01). Without a correct clock, TLS cert verification fails.
 # busybox ntpd -q performs a one-shot adjustment and exits.
+# Use numeric IPs first to avoid DNS resolution timeout: busybox ntpd sends a
+# single NTP query and waits for SIGALRM (default 64 s) if the server is
+# unreachable. DNS lookup for pool.ntp.org can itself timeout, causing the
+# script to stall for minutes. Numeric IPs bypass that bottleneck.
+#   162.159.200.123  Cloudflare NTP (time.cloudflare.com)
+#   17.253.14.251    Apple NTP     (time.apple.com)
 log_line "Syncing time via NTP..."
-if /bin/busybox ntpd -q -n -p pool.ntp.org 2>/dev/null; then
+if /bin/busybox ntpd -q -n -p 162.159.200.123 2>/dev/null \
+   || /bin/busybox ntpd -q -n -p 17.253.14.251 2>/dev/null \
+   || /bin/busybox ntpd -q -n -p pool.ntp.org 2>/dev/null; then
   log_line "  Time: NTP sync ok ($(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo unknown))"
 else
   log_line "  Time: NTP sync failed (TLS cert verification may fail)"
@@ -315,6 +336,21 @@ if /bin/busybox mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null; then
 else
   log_line "  cgroup2 mount failed (may already be mounted)"
 fi
+
+# Load overlay filesystem module required by Docker's overlay2 storage driver.
+# Without overlay, pivot_root fails with EINVAL when creating containers.
+load_module overlay "kernel/fs/overlayfs/overlay.ko"
+
+# Mount tmpfs on /var/lib/docker so overlay2 storage driver can create overlay
+# mounts. The initramfs rootfs (ramfs) does not support xattrs or overlayfs
+# upper layers; tmpfs does. Without this, dockerd overlay2 mounts fail and
+# pivot_root returns EINVAL because the merged directory is not a mount point.
+/bin/busybox mkdir -p /var/lib/docker
+if /bin/busybox mount -t tmpfs tmpfs /var/lib/docker -o size=10g; then
+  log_line "  tmpfs mounted at /var/lib/docker (overlay2 backing store)"
+else
+  log_line "  tmpfs mount on /var/lib/docker failed (overlay2 may not work)"
+fi
 log_line ""
 
 log_line "Loading vsock modules..."
@@ -334,6 +370,13 @@ if [ -f /proc/modules ]; then
 fi
 
 /bin/busybox sleep 1
+
+# Make the entire mount tree recursively private.
+# pivot_root (used by container OCI runtimes) fails with EINVAL when any mount
+# in the parent namespace has shared propagation. Without this, IS_MNT_SHARED
+# checks in the kernel reject pivot_root even if the container rootfs is a
+# proper mount point. This is the standard container-host initialisation step.
+/bin/busybox mount --make-rprivate / 2>/dev/null && log_line "Mount tree: rprivate" || log_line "Mount tree: make-rprivate failed (pivot_root may fail)"
 
 AGENT_LOG="/var/log/arcbox-agent.log"
 if /bin/busybox grep -q " /arcbox " /proc/mounts; then
