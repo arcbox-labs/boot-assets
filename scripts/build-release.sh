@@ -8,7 +8,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 VERSION=""
 ARCH="arm64"
-ALPINE_VERSION="3.21"
+export ALPINE_VERSION="3.21"
 ALPINE_FLAVOR="lts"
 ARCBOX_DIR=""
 ARCBOX_REPO="unknown"

@@ -181,6 +181,20 @@ copy_module "$MODS_SRC/net/bridge"    "$MODS_DST/net/bridge"    bridge.ko
 copy_module "$MODS_SRC/net/bridge"    "$MODS_DST/net/bridge"    br_netfilter.ko
 copy_module "$MODS_SRC/drivers/net"   "$MODS_DST/drivers/net"   veth.ko
 
+# Netfilter/iptables modules: required for container networking (MASQUERADE/NAT).
+# dockerd uses iptables to install POSTROUTING MASQUERADE rules that allow
+# container traffic (172.17.0.0/16) to reach the internet via eth0.
+# Dependency order: defrag → conntrack → x_tables → nf_nat → ip_tables → iptable_*
+copy_module "$MODS_SRC/net/netfilter"       "$MODS_DST/net/netfilter"       nf_defrag_ipv4.ko
+copy_module "$MODS_SRC/net/netfilter"       "$MODS_DST/net/netfilter"       nf_defrag_ipv6.ko
+copy_module "$MODS_SRC/net/netfilter"       "$MODS_DST/net/netfilter"       nf_conntrack.ko
+copy_module "$MODS_SRC/net/netfilter"       "$MODS_DST/net/netfilter"       x_tables.ko
+copy_module "$MODS_SRC/net/netfilter"       "$MODS_DST/net/netfilter"       nf_nat.ko
+copy_module "$MODS_SRC/net/netfilter"       "$MODS_DST/net/netfilter"       nf_reject_ipv4.ko
+copy_module "$MODS_SRC/net/ipv4/netfilter"  "$MODS_DST/net/ipv4/netfilter"  ip_tables.ko
+copy_module "$MODS_SRC/net/ipv4/netfilter"  "$MODS_DST/net/ipv4/netfilter"  iptable_filter.ko
+copy_module "$MODS_SRC/net/ipv4/netfilter"  "$MODS_DST/net/ipv4/netfilter"  iptable_nat.ko
+
 # ---------------------------------------------------------------------------
 # Write the Stage 1 /init script.
 # This script is intentionally minimal: it only bootstraps to rootfs.squashfs.
@@ -256,6 +270,19 @@ load_ko vmw_vsock_virtio_transport_common \
                            "kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko"
 load_ko vmw_vsock_virtio_transport \
                            "kernel/net/vmw_vsock/vmw_vsock_virtio_transport.ko"
+
+# Netfilter/iptables: loaded before bridge because br_netfilter depends on
+# nf_conntrack. Load in dependency order so insmod fallback also works.
+# If any module is built into the kernel, load_ko silently succeeds (return 0).
+load_ko nf_defrag_ipv4  "kernel/net/netfilter/nf_defrag_ipv4.ko"
+load_ko nf_defrag_ipv6  "kernel/net/netfilter/nf_defrag_ipv6.ko"
+load_ko nf_conntrack    "kernel/net/netfilter/nf_conntrack.ko"
+load_ko x_tables        "kernel/net/netfilter/x_tables.ko"
+load_ko nf_nat          "kernel/net/netfilter/nf_nat.ko"
+load_ko nf_reject_ipv4  "kernel/net/netfilter/nf_reject_ipv4.ko"
+load_ko ip_tables       "kernel/net/ipv4/netfilter/ip_tables.ko"
+load_ko iptable_filter  "kernel/net/ipv4/netfilter/iptable_filter.ko"
+load_ko iptable_nat     "kernel/net/ipv4/netfilter/iptable_nat.ko"
 
 # Docker networking: loaded here because Stage 2 has no /lib/modules.
 # bridge: lets dockerd create the docker0 bridge interface via netlink.

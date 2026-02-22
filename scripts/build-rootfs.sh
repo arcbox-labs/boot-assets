@@ -90,6 +90,26 @@ echo "extract Alpine minirootfs: $ALPINE_MINIROOTFS"
 tar -xzf "$ALPINE_MINIROOTFS" -C "$WORK_DIR" 2>/dev/null
 
 # ---------------------------------------------------------------------------
+# Install iptables into the rootfs.
+# Required for dockerd to install POSTROUTING MASQUERADE rules that allow
+# container traffic (172.17.0.0/16) to reach the internet via eth0.
+# Uses Docker with --platform linux/arm64/v8 so this works on both Linux CI
+# (x86_64 runners with binfmt_misc) and macOS (Docker Desktop / Colima).
+# ---------------------------------------------------------------------------
+echo "install iptables into rootfs"
+if command -v docker >/dev/null 2>&1; then
+  docker run --rm \
+    --platform linux/arm64/v8 \
+    -v "$WORK_DIR:/rootfs" \
+    alpine:"${ALPINE_VERSION:-3.21}" \
+    apk add --no-scripts --no-cache -p /rootfs iptables
+  echo "iptables installed into rootfs"
+else
+  echo "warning: docker not available; iptables not installed in rootfs" >&2
+  echo "container networking (MASQUERADE) will not work" >&2
+fi
+
+# ---------------------------------------------------------------------------
 # Install arcbox-agent.
 # ---------------------------------------------------------------------------
 echo "inject arcbox-agent: $AGENT_BIN"
