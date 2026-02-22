@@ -279,7 +279,7 @@ fi
 # makes pivot_root work: it has a proper mnt_parent (unlike the initramfs
 # ramfs whose root mount is self-referential).
 # ---------------------------------------------------------------------------
-/bin/busybox mkdir -p /mnt/lower /mnt/upper/upper /mnt/upper/work /newroot
+/bin/busybox mkdir -p /mnt/lower /mnt/upper /newroot
 
 # Mount squashfs as the read-only lower layer via a loop device.
 if ! /bin/busybox mount -t squashfs -o loop "$SQUASHFS" /mnt/lower; then
@@ -289,6 +289,11 @@ fi
 
 # Mount tmpfs as the read-write upper layer.
 /bin/busybox mount -t tmpfs tmpfs /mnt/upper
+
+# Create upper/work directories ON the tmpfs (must be after the tmpfs mount;
+# creating them before would put them on the initramfs ramfs, which is then
+# hidden by the tmpfs mount, causing overlayfs to fail with ENOENT).
+/bin/busybox mkdir -p /mnt/upper/upper /mnt/upper/work
 
 # Assemble overlay: lower=squashfs, upper=tmpfs, merged=newroot.
 if ! /bin/busybox mount -t overlay overlay \
