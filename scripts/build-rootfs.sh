@@ -102,14 +102,13 @@ _ALPINE_VER="${ALPINE_VERSION:-3.21}"
 _REPO_URL="https://dl-cdn.alpinelinux.org/alpine/v${_ALPINE_VER}/main/aarch64"
 
 if command -v docker >/dev/null 2>&1; then
-  echo "  using Docker to install iptables (libmnl libnftnl iptables)"
+  echo "  using Docker to install iptables-legacy (libmnl iptables-legacy)"
   # Run apk add inside an Alpine container with the rootfs mounted.
   # On the ARM64 CI runner (ubuntu-24.04-arm) this runs natively; on macOS
   # with Docker Desktop / colima, Docker handles the platform transparently.
-  # Run as the current user so extracted files are host-user-owned and the
-  # cleanup trap (rm -rf "$WORK_DIR") can remove them without sudo.
+  # apk needs root to write into the rootfs, so run the container as root.
+  # After the container exits, fix file ownership so the host user can clean up.
   docker run --rm \
-    --user "$(id -u):$(id -g)" \
     -v "${WORK_DIR}:/rootfs" \
     "alpine:${_ALPINE_VER}" \
     apk add --no-cache \
@@ -118,10 +117,13 @@ if command -v docker >/dev/null 2>&1; then
       --allow-untrusted \
       --initdb \
       -X "${_REPO_URL}" \
-      libmnl libnftnl iptables || {
+      libmnl iptables-legacy || {
     echo "docker apk add failed" >&2
     exit 1
   }
+  # Fix ownership: files written by root inside the container would block
+  # the cleanup trap (rm -rf "$WORK_DIR") running as the host user.
+  sudo chown -R "$(id -u):$(id -g)" "${WORK_DIR}" 2>/dev/null || true
 else
   echo "  Docker not available; using Python APK extraction (fallback)"
   python3 - "$WORK_DIR" "$_REPO_URL" <<'PYEOF'
@@ -129,11 +131,13 @@ import sys, io, gzip, tarfile, zlib, struct, urllib.request, urllib.error
 
 destdir  = sys.argv[1]
 repo_url = sys.argv[2]
-# Packages required for iptables to run inside the ArcBox guest VM.
-# iptables: firewall tool used by dockerd for MASQUERADE/NAT rules.
-# libmnl:   lightweight netlink library (runtime dep of iptables).
-# libnftnl: netfilter nftables library  (runtime dep of iptables).
-packages = ["libmnl", "libnftnl", "iptables"]
+# Packages required for iptables (legacy/xtables backend) in the ArcBox guest.
+# iptables-legacy: xtables-legacy-multi binary — uses the traditional xt_tables
+#   kernel API (ip_tables, iptable_nat). Alpine 3.21+ defaults to the nft backend
+#   ("iptables" package → xtables-nft-multi); we need the legacy package so that
+#   dockerd's iptables calls work with the xtables kernel modules we load in Stage 1.
+# libmnl: lightweight netlink library used by xtables-legacy-multi at runtime.
+packages = ["libmnl", "iptables-legacy"]
 
 def fetch(url):
     req = urllib.request.Request(url, headers={"User-Agent": "arcbox-build/1.0"})
