@@ -207,6 +207,14 @@ copy_module "$MODS_SRC/net/netfilter"                "$MODS_DST/net/netfilter"  
 copy_module "$MODS_SRC/net/ipv4/netfilter"           "$MODS_DST/net/ipv4/netfilter"           ip_tables.ko
 copy_module "$MODS_SRC/net/ipv4/netfilter"           "$MODS_DST/net/ipv4/netfilter"           iptable_filter.ko
 copy_module "$MODS_SRC/net/ipv4/netfilter"           "$MODS_DST/net/ipv4/netfilter"           iptable_nat.ko
+# xt_ extension modules required by dockerd (loaded in Stage 1 because Stage 2
+# has no /lib/modules access after switch_root drops the modloop mount):
+#   xt_addrtype  — "-m addrtype --dst-type LOCAL" used in PREROUTING/OUTPUT chains
+#   xt_MASQUERADE — MASQUERADE target for POSTROUTING (separate .ko in Alpine 6.12)
+#   xt_conntrack  — "-m conntrack --ctstate RELATED,ESTABLISHED" in FORWARD chain
+copy_module "$MODS_SRC/net/netfilter"                "$MODS_DST/net/netfilter"                xt_addrtype.ko
+copy_module "$MODS_SRC/net/netfilter"                "$MODS_DST/net/netfilter"                xt_MASQUERADE.ko
+copy_module "$MODS_SRC/net/netfilter"                "$MODS_DST/net/netfilter"                xt_conntrack.ko
 
 # Copy modules.dep and modules.alias from the modloop so that modprobe in
 # Stage 1 can automatically resolve module dependencies. Without this,
@@ -315,6 +323,11 @@ load_ko nf_reject_ipv4 "kernel/net/netfilter/nf_reject_ipv4.ko"
 load_ko ip_tables      "kernel/net/ipv4/netfilter/ip_tables.ko"
 load_ko iptable_filter "kernel/net/ipv4/netfilter/iptable_filter.ko"
 load_ko iptable_nat    "kernel/net/ipv4/netfilter/iptable_nat.ko"
+# xt_ extension modules required by dockerd; must be loaded here because Stage 2
+# has no /lib/modules access (modloop mount is dropped by switch_root).
+load_ko xt_addrtype    "kernel/net/netfilter/xt_addrtype.ko"
+load_ko xt_MASQUERADE  "kernel/net/netfilter/xt_MASQUERADE.ko"
+load_ko xt_conntrack   "kernel/net/netfilter/xt_conntrack.ko"
 
 # Docker networking: loaded here because Stage 2 has no /lib/modules.
 # bridge: lets dockerd create the docker0 bridge interface via netlink.
