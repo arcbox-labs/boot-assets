@@ -159,6 +159,15 @@ copy_module "$MODS_SRC/drivers/block" "$MODS_DST/drivers/block" loop.ko
 copy_module "$MODS_SRC/fs/squashfs" "$MODS_DST/fs/squashfs" squashfs.ko
 copy_module "$MODS_SRC/fs/overlayfs" "$MODS_DST/fs/overlayfs" overlay.ko
 
+# vSock transport: must be loaded in Stage 1 so the arcbox-agent can bind
+# vsock ports immediately after switch_root. The kernel does not automatically
+# re-probe the virtio-vsock device after switch_root (no udev daemon is
+# running to handle the uevent), so the transport driver must be present in
+# the initramfs and loaded before handing off to Stage 2.
+copy_module "$MODS_SRC/net/vmw_vsock" "$MODS_DST/net/vmw_vsock" vsock.ko
+copy_module "$MODS_SRC/net/vmw_vsock" "$MODS_DST/net/vmw_vsock" vmw_vsock_virtio_transport_common.ko
+copy_module "$MODS_SRC/net/vmw_vsock" "$MODS_DST/net/vmw_vsock" vmw_vsock_virtio_transport.ko
+
 # Copy module metadata so modprobe can resolve bootstrap dependencies.
 mkdir -p "$WORK_DIR/lib/modules/$KERNEL_VERSION"
 cp "$MODLOOP_EXTRACT/modules/$KERNEL_VERSION/modules.dep" \
@@ -227,6 +236,13 @@ load_ko virtiofs               "kernel/fs/fuse/virtiofs.ko"
 load_ko loop                   "kernel/drivers/block/loop.ko"
 load_ko squashfs               "kernel/fs/squashfs/squashfs.ko"
 load_ko overlay                "kernel/fs/overlayfs/overlay.ko"
+
+# vSock transport for agent communication. Must be loaded before switch_root
+# because the kernel does not re-probe the virtio-vsock device after
+# switch_root (no udev daemon handles the uevent in this minimal setup).
+load_ko vsock                           "kernel/net/vmw_vsock/vsock.ko"
+load_ko vmw_vsock_virtio_transport_common "kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko"
+load_ko vmw_vsock_virtio_transport      "kernel/net/vmw_vsock/vmw_vsock_virtio_transport.ko"
 
 # ---------------------------------------------------------------------------
 # Mount VirtioFS to access boot assets.
