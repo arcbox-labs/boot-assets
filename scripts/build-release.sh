@@ -271,10 +271,14 @@ fi
 cp "$BASE_DIR/vmlinuz-${ARCH}" "$WORK_DIR/kernel"
 rm -rf "$WORK_DIR/runtime"
 cp -R "$BASE_DIR/runtime" "$WORK_DIR/runtime"
+# Copy modloop (Alpine kernel modules squashfs) into the bundle so that Stage 2
+# can mount it and have a fully functional /lib/modules via modprobe.
+cp "$BASE_DIR/modloop-${ALPINE_FLAVOR}" "$WORK_DIR/modloop"
 
 KERNEL_SHA256="$(shasum -a 256 "$WORK_DIR/kernel" | awk '{print $1}')"
 INITRAMFS_SHA256="$(shasum -a 256 "$WORK_DIR/initramfs.cpio.gz" | awk '{print $1}')"
 ROOTFS_SQUASHFS_SHA256="$(shasum -a 256 "$WORK_DIR/rootfs.squashfs" | awk '{print $1}')"
+MODLOOP_SHA256="$(shasum -a 256 "$WORK_DIR/modloop" | awk '{print $1}')"
 if [[ -n "$ARCBOX_SHA_OVERRIDE" ]]; then
   ARCBOX_SHA="$ARCBOX_SHA_OVERRIDE"
 else
@@ -288,11 +292,12 @@ RUNTIME_DOCKERD_SHA256="${RUNTIME_DOCKERD_SHA256:-$(shasum -a 256 "$WORK_DIR/run
 RUNTIME_CONTAINERD_SHA256="${RUNTIME_CONTAINERD_SHA256:-$(shasum -a 256 "$WORK_DIR/runtime/bin/containerd" | awk '{print $1}')}"
 RUNTIME_YOUKI_SHA256="${RUNTIME_YOUKI_SHA256:-$(shasum -a 256 "$WORK_DIR/runtime/bin/youki" | awk '{print $1}')}"
 
-# schema_version 2: adds rootfs_squashfs_sha256. Stage 1 initramfs is now a
-# minimal bootstrap; Stage 2 rootfs.squashfs contains the full guest userspace.
+# schema_version 3: adds modloop (Alpine kernel modules squashfs).
+# Stage 1 bind-mounts modloop/modules/<kver> into /newroot/lib/modules so that
+# Stage 2 has a fully functional /lib/modules and modprobe works normally.
 cat > "$WORK_DIR/manifest.json" <<EOF
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "asset_version": "${VERSION}",
   "arch": "${ARCH}",
   "alpine_branch_version": "${ALPINE_VERSION}",
@@ -303,6 +308,7 @@ cat > "$WORK_DIR/manifest.json" <<EOF
   "kernel_sha256": "${KERNEL_SHA256}",
   "initramfs_sha256": "${INITRAMFS_SHA256}",
   "rootfs_squashfs_sha256": "${ROOTFS_SQUASHFS_SHA256}",
+  "modloop_sha256": "${MODLOOP_SHA256}",
   "kernel_source_url": "${KERNEL_URL}",
   "initramfs_source_url": "${INITRAMFS_URL}",
   "modloop_source_url": "${MODLOOP_URL}",
@@ -340,7 +346,7 @@ TARBALL="boot-assets-${ARCH}-v${VERSION}.tar.gz"
 
 echo "==> package tarball"
 tar -czf "$OUTPUT_DIR/$TARBALL" -C "$WORK_DIR" \
-  kernel initramfs.cpio.gz rootfs.squashfs manifest.json runtime
+  kernel initramfs.cpio.gz rootfs.squashfs modloop manifest.json runtime
 shasum -a 256 "$OUTPUT_DIR/$TARBALL" > "$OUTPUT_DIR/$TARBALL.sha256"
 cp "$WORK_DIR/manifest.json" "$OUTPUT_DIR/manifest.json"
 

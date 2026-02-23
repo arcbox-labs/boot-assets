@@ -396,6 +396,29 @@ fi
 /bin/busybox mkdir -p /newroot/proc /newroot/sys /newroot/dev /newroot/arcbox
 
 # ---------------------------------------------------------------------------
+# Mount the Alpine modloop inside /newroot so Stage 2 has a functional
+# /lib/modules.  After switch_root the initramfs ramfs is gone, so anything
+# NOT mounted inside /newroot is inaccessible in Stage 2.  Mounting the
+# modloop here gives Stage 2 full modprobe access without requiring us to
+# hand-pick individual .ko files.
+# ---------------------------------------------------------------------------
+KERNEL_VER=$(/bin/busybox uname -r)
+MODLOOP="/mnt/arcbox/boot/${BOOT_VERSION}/modloop"
+if [ -f "$MODLOOP" ]; then
+  /bin/busybox mkdir -p /newroot/mnt/modloop "/newroot/lib/modules/$KERNEL_VER"
+  if /bin/busybox mount -t squashfs -o loop "$MODLOOP" /newroot/mnt/modloop 2>/dev/null; then
+    /bin/busybox mount --bind \
+        "/newroot/mnt/modloop/modules/$KERNEL_VER" \
+        "/newroot/lib/modules/$KERNEL_VER"
+    log "Modloop mounted: /lib/modules/$KERNEL_VER available in Stage 2"
+  else
+    log "WARN: failed to mount modloop — Stage 2 will have no /lib/modules"
+  fi
+else
+  log "WARN: modloop not found at $MODLOOP — Stage 2 will have no /lib/modules"
+fi
+
+# ---------------------------------------------------------------------------
 # Move already-mounted filesystems into the new root so they are available
 # immediately when Stage 2 /init starts.
 # ---------------------------------------------------------------------------
