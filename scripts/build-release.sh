@@ -20,6 +20,10 @@ CONTAINERD_VERSION=""
 CONTAINERD_SHA256=""
 YOUKI_VERSION=""
 YOUKI_SHA256=""
+# Pre-built artifacts: when provided, the corresponding build steps are skipped.
+PREBUILT_AGENT_BIN=""  # --agent-bin: skip cargo build arcbox-agent
+PREBUILT_ROOTFS=""     # --rootfs:    skip build-rootfs.sh
+ARCBOX_SHA_OVERRIDE="" # --arcbox-sha: override git rev-parse HEAD
 
 usage() {
   cat <<'EOF'
@@ -42,6 +46,9 @@ Optional:
   --arcbox-repo <repo>     ArcBox source repository (for manifest)
   --arcbox-ref <ref>       ArcBox source ref (for manifest)
   --output-dir <dir>       Output directory (default: dist/)
+  --agent-bin <path>       Use pre-built arcbox-agent binary (skip cargo build)
+  --rootfs <path>          Use pre-built rootfs.squashfs (skip build-rootfs.sh)
+  --arcbox-sha <sha>       Override arcbox git SHA recorded in manifest
 EOF
 }
 
@@ -103,6 +110,18 @@ while [[ $# -gt 0 ]]; do
       OUTPUT_DIR="$2"
       shift 2
       ;;
+    --agent-bin)
+      PREBUILT_AGENT_BIN="$2"
+      shift 2
+      ;;
+    --rootfs)
+      PREBUILT_ROOTFS="$2"
+      shift 2
+      ;;
+    --arcbox-sha)
+      ARCBOX_SHA_OVERRIDE="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -148,11 +167,19 @@ WORK_DIR="$BUILD_ROOT/work"
 mkdir -p "$BASE_DIR" "$WORK_DIR" "$OUTPUT_DIR"
 
 echo "==> download base kernel/initramfs/modloop"
-"$SCRIPT_DIR/download-kernel.sh" \
-  --arch "$ARCH" \
-  --alpine-version "$ALPINE_VERSION" \
-  --flavor "$ALPINE_FLAVOR" \
+_kernel_dl_flags=(
+  --arch "$ARCH"
+  --alpine-version "$ALPINE_VERSION"
+  --flavor "$ALPINE_FLAVOR"
   --out-dir "$BASE_DIR"
+)
+# When a pre-built rootfs is provided, the minirootfs is not needed for
+# build-rootfs.sh; skip it to save download time.
+if [[ -n "$PREBUILT_ROOTFS" ]]; then
+  _kernel_dl_flags+=(--no-minirootfs)
+fi
+"$SCRIPT_DIR/download-kernel.sh" "${_kernel_dl_flags[@]}"
+unset _kernel_dl_flags
 
 echo "==> download runtime artifacts"
 runtime_args=(
@@ -188,18 +215,27 @@ if [[ -f "$BASE_DIR/runtime/runtime-metadata.env" ]]; then
   source "$BASE_DIR/runtime/runtime-metadata.env"
 fi
 
-echo "==> build arcbox-agent"
-CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="${CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER:-rust-lld}" \
-cargo build \
-  --manifest-path "$ARCBOX_DIR/Cargo.toml" \
-  -p arcbox-agent \
-  --target "$TARGET_TRIPLE" \
-  --release
+if [[ -n "$PREBUILT_AGENT_BIN" ]]; then
+  echo "==> using pre-built arcbox-agent: $PREBUILT_AGENT_BIN"
+  if [[ ! -f "$PREBUILT_AGENT_BIN" ]]; then
+    echo "pre-built agent binary not found: $PREBUILT_AGENT_BIN" >&2
+    exit 1
+  fi
+  AGENT_BIN="$PREBUILT_AGENT_BIN"
+else
+  echo "==> build arcbox-agent"
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="${CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER:-rust-lld}" \
+  cargo build \
+    --manifest-path "$ARCBOX_DIR/Cargo.toml" \
+    -p arcbox-agent \
+    --target "$TARGET_TRIPLE" \
+    --release
 
-AGENT_BIN="$ARCBOX_DIR/target/$TARGET_TRIPLE/release/arcbox-agent"
-if [[ ! -f "$AGENT_BIN" ]]; then
-  echo "agent binary not found: $AGENT_BIN" >&2
-  exit 1
+  AGENT_BIN="$ARCBOX_DIR/target/$TARGET_TRIPLE/release/arcbox-agent"
+  if [[ ! -f "$AGENT_BIN" ]]; then
+    echo "agent binary not found: $AGENT_BIN" >&2
+    exit 1
+  fi
 fi
 
 echo "==> build stage1 initramfs"
@@ -209,19 +245,28 @@ echo "==> build stage1 initramfs"
   --modloop "$BASE_DIR/modloop-${ALPINE_FLAVOR}" \
   --output "$WORK_DIR/initramfs.cpio.gz"
 
-# Locate Alpine minirootfs for building rootfs.squashfs.
-ALPINE_MINIROOTFS="$BASE_DIR/alpine-minirootfs.tar.gz"
-if [[ ! -f "$ALPINE_MINIROOTFS" ]]; then
-  echo "Alpine minirootfs not found: $ALPINE_MINIROOTFS" >&2
-  echo "Run download-kernel.sh without --no-minirootfs to download it." >&2
-  exit 1
-fi
+if [[ -n "$PREBUILT_ROOTFS" ]]; then
+  echo "==> using pre-built rootfs.squashfs: $PREBUILT_ROOTFS"
+  if [[ ! -f "$PREBUILT_ROOTFS" ]]; then
+    echo "pre-built rootfs not found: $PREBUILT_ROOTFS" >&2
+    exit 1
+  fi
+  cp "$PREBUILT_ROOTFS" "$WORK_DIR/rootfs.squashfs"
+else
+  # Locate Alpine minirootfs for building rootfs.squashfs.
+  ALPINE_MINIROOTFS="$BASE_DIR/alpine-minirootfs.tar.gz"
+  if [[ ! -f "$ALPINE_MINIROOTFS" ]]; then
+    echo "Alpine minirootfs not found: $ALPINE_MINIROOTFS" >&2
+    echo "Run download-kernel.sh without --no-minirootfs to download it." >&2
+    exit 1
+  fi
 
-echo "==> build rootfs.squashfs (stage2 rootfs)"
-"$SCRIPT_DIR/build-rootfs.sh" \
-  --agent-bin "$AGENT_BIN" \
-  --alpine-minirootfs "$ALPINE_MINIROOTFS" \
-  --output "$WORK_DIR/rootfs.squashfs"
+  echo "==> build rootfs.squashfs (stage2 rootfs)"
+  "$SCRIPT_DIR/build-rootfs.sh" \
+    --agent-bin "$AGENT_BIN" \
+    --alpine-minirootfs "$ALPINE_MINIROOTFS" \
+    --output "$WORK_DIR/rootfs.squashfs"
+fi
 
 cp "$BASE_DIR/vmlinuz-${ARCH}" "$WORK_DIR/kernel"
 rm -rf "$WORK_DIR/runtime"
@@ -230,7 +275,11 @@ cp -R "$BASE_DIR/runtime" "$WORK_DIR/runtime"
 KERNEL_SHA256="$(shasum -a 256 "$WORK_DIR/kernel" | awk '{print $1}')"
 INITRAMFS_SHA256="$(shasum -a 256 "$WORK_DIR/initramfs.cpio.gz" | awk '{print $1}')"
 ROOTFS_SQUASHFS_SHA256="$(shasum -a 256 "$WORK_DIR/rootfs.squashfs" | awk '{print $1}')"
-ARCBOX_SHA="$(git -C "$ARCBOX_DIR" rev-parse HEAD)"
+if [[ -n "$ARCBOX_SHA_OVERRIDE" ]]; then
+  ARCBOX_SHA="$ARCBOX_SHA_OVERRIDE"
+else
+  ARCBOX_SHA="$(git -C "$ARCBOX_DIR" rev-parse HEAD)"
+fi
 BUILT_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 RUNTIME_DOCKER_VERSION="${RUNTIME_DOCKER_VERSION:-unknown}"
 RUNTIME_CONTAINERD_VERSION="${RUNTIME_CONTAINERD_VERSION:-unknown}"

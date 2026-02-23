@@ -65,18 +65,27 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    name: Build Boot Assets
-    runs-on: macos-14
+  # ==========================================================================
+  # Stage 0: Resolve version and default values for all build parameters.
+  # ==========================================================================
+  resolve-vars:
+    name: Resolve Build Variables
+    runs-on: ubuntu-latest
 
     outputs:
       version: ${{ steps.vars.outputs.version }}
-      tarball: ${{ steps.build.outputs.tarball }}
+      arcbox_repo: ${{ steps.vars.outputs.arcbox_repo }}
+      arcbox_ref: ${{ steps.vars.outputs.arcbox_ref }}
+      alpine_version: ${{ steps.vars.outputs.alpine_version }}
+      alpine_flavor: ${{ steps.vars.outputs.alpine_flavor }}
+      docker_version: ${{ steps.vars.outputs.docker_version }}
+      docker_sha256: ${{ steps.vars.outputs.docker_sha256 }}
+      containerd_version: ${{ steps.vars.outputs.containerd_version }}
+      containerd_sha256: ${{ steps.vars.outputs.containerd_sha256 }}
+      youki_version: ${{ steps.vars.outputs.youki_version }}
+      youki_sha256: ${{ steps.vars.outputs.youki_sha256 }}
 
     steps:
-      - name: Checkout boot-assets repository
-        uses: actions/checkout@v4
-
       - name: Resolve build variables
         id: vars
         run: |
@@ -124,11 +133,27 @@ jobs:
           echo "youki_version=$YOUKI_VERSION" >> "$GITHUB_OUTPUT"
           echo "youki_sha256=$YOUKI_SHA256" >> "$GITHUB_OUTPUT"
 
+  # ==========================================================================
+  # Stage 1a: Cross-compile arcbox-agent (macOS → Linux ARM64 musl).
+  # Runs on macOS because the Rust cross-compilation toolchain targets musl.
+  # ==========================================================================
+  build-agent:
+    name: Build arcbox-agent
+    needs: resolve-vars
+    runs-on: macos-14
+
+    outputs:
+      arcbox_sha: ${{ steps.agent.outputs.arcbox_sha }}
+
+    steps:
+      - name: Checkout boot-assets repository
+        uses: actions/checkout@v4
+
       - name: Clone arcbox source
         run: |
           git clone --depth 1 \
-            --branch "${{ steps.vars.outputs.arcbox_ref }}" \
-            "https://github.com/${{ steps.vars.outputs.arcbox_repo }}.git" \
+            --branch "${{ needs.resolve-vars.outputs.arcbox_ref }}" \
+            "https://github.com/${{ needs.resolve-vars.outputs.arcbox_repo }}.git" \
             arcbox-src
 
       - name: Setup Rust
@@ -136,48 +161,171 @@ jobs:
         with:
           targets: aarch64-unknown-linux-musl
 
+      - name: Install protoc
+        run: |
+          if ! command -v protoc >/dev/null 2>&1; then
+            brew install protobuf
+          fi
+
+      - name: Cross-compile arcbox-agent
+        id: agent
+        run: |
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="${CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER:-rust-lld}" \
+          cargo build \
+            --manifest-path arcbox-src/Cargo.toml \
+            -p arcbox-agent \
+            --target aarch64-unknown-linux-musl \
+            --release
+
+          AGENT_BIN="arcbox-src/target/aarch64-unknown-linux-musl/release/arcbox-agent"
+          if [[ ! -f "$AGENT_BIN" ]]; then
+            echo "agent binary not found: $AGENT_BIN" >&2
+            exit 1
+          fi
+
+          ARCBOX_SHA="$(git -C arcbox-src rev-parse HEAD)"
+          echo "arcbox_sha=$ARCBOX_SHA" >> "$GITHUB_OUTPUT"
+
+          mkdir -p staging
+          cp "$AGENT_BIN" staging/arcbox-agent
+
+      - name: Upload agent binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-binary
+          path: staging/arcbox-agent
+          retention-days: 1
+
+  # ==========================================================================
+  # Stage 1b: Build rootfs.squashfs on Ubuntu where Docker is available.
+  # Docker enables proper `apk add iptables` instead of the fragile Python
+  # APK extraction workaround required on macOS (no Docker, no apk tool).
+  # ==========================================================================
+  build-rootfs:
+    name: Build rootfs.squashfs
+    needs: [resolve-vars, build-agent]
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout boot-assets repository
+        uses: actions/checkout@v4
+
+      - name: Download agent binary
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-binary
+          path: staging
+
+      - name: Install squashfs-tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq squashfs-tools
+
+      - name: Download Alpine minirootfs
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/download-kernel.sh \
+            --arch arm64 \
+            --alpine-version "${{ needs.resolve-vars.outputs.alpine_version }}" \
+            --flavor "${{ needs.resolve-vars.outputs.alpine_flavor }}" \
+            --out-dir "$PWD/build/arm64/base" \
+            --minirootfs-only
+
+      - name: Build rootfs.squashfs
+        run: |
+          chmod +x staging/arcbox-agent
+          ALPINE_VERSION="${{ needs.resolve-vars.outputs.alpine_version }}" \
+          ./scripts/build-rootfs.sh \
+            --agent-bin "$PWD/staging/arcbox-agent" \
+            --alpine-minirootfs "$PWD/build/arm64/base/alpine-minirootfs.tar.gz" \
+            --output "$PWD/build/arm64/work/rootfs.squashfs"
+
+      - name: Upload rootfs.squashfs
+        uses: actions/upload-artifact@v4
+        with:
+          name: rootfs-squashfs
+          path: build/arm64/work/rootfs.squashfs
+          retention-days: 1
+
+  # ==========================================================================
+  # Stage 2: Assemble final tarball (kernel + initramfs + rootfs + runtime).
+  # Runs on macOS for kernel format conversion and initramfs rebuild.
+  # ==========================================================================
+  build:
+    name: Assemble Boot Assets
+    needs: [resolve-vars, build-agent, build-rootfs]
+    runs-on: macos-14
+
+    outputs:
+      version: ${{ needs.resolve-vars.outputs.version }}
+      tarball: ${{ steps.assemble.outputs.tarball }}
+
+    steps:
+      - name: Checkout boot-assets repository
+        uses: actions/checkout@v4
+
+      - name: Clone arcbox source
+        run: |
+          git clone --depth 1 \
+            --branch "${{ needs.resolve-vars.outputs.arcbox_ref }}" \
+            "https://github.com/${{ needs.resolve-vars.outputs.arcbox_repo }}.git" \
+            arcbox-src
+
       - name: Install build dependencies
         run: |
           if ! command -v unsquashfs >/dev/null 2>&1; then
             brew install squashfs
           fi
-          if ! command -v protoc >/dev/null 2>&1; then
-            brew install protobuf
-          fi
+
+      - name: Download agent binary
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-binary
+          path: staging
+
+      - name: Download rootfs.squashfs
+        uses: actions/download-artifact@v4
+        with:
+          name: rootfs-squashfs
+          path: staging
 
       - name: Build release assets
-        id: build
+        id: assemble
         run: |
-          chmod +x scripts/*.sh
+          chmod +x scripts/*.sh staging/arcbox-agent
+
           ./scripts/build-release.sh \
-            --version "${{ steps.vars.outputs.version }}" \
+            --version "${{ needs.resolve-vars.outputs.version }}" \
             --arcbox-dir "$PWD/arcbox-src" \
-            --arcbox-repo "${{ steps.vars.outputs.arcbox_repo }}" \
-            --arcbox-ref "${{ steps.vars.outputs.arcbox_ref }}" \
-            --alpine-version "${{ steps.vars.outputs.alpine_version }}" \
-            --alpine-flavor "${{ steps.vars.outputs.alpine_flavor }}" \
-            --docker-version "${{ steps.vars.outputs.docker_version }}" \
-            --docker-sha256 "${{ steps.vars.outputs.docker_sha256 }}" \
-            --containerd-version "${{ steps.vars.outputs.containerd_version }}" \
-            --containerd-sha256 "${{ steps.vars.outputs.containerd_sha256 }}" \
-            --youki-version "${{ steps.vars.outputs.youki_version }}" \
-            --youki-sha256 "${{ steps.vars.outputs.youki_sha256 }}" \
+            --arcbox-repo "${{ needs.resolve-vars.outputs.arcbox_repo }}" \
+            --arcbox-ref "${{ needs.resolve-vars.outputs.arcbox_ref }}" \
+            --alpine-version "${{ needs.resolve-vars.outputs.alpine_version }}" \
+            --alpine-flavor "${{ needs.resolve-vars.outputs.alpine_flavor }}" \
+            --docker-version "${{ needs.resolve-vars.outputs.docker_version }}" \
+            --docker-sha256 "${{ needs.resolve-vars.outputs.docker_sha256 }}" \
+            --containerd-version "${{ needs.resolve-vars.outputs.containerd_version }}" \
+            --containerd-sha256 "${{ needs.resolve-vars.outputs.containerd_sha256 }}" \
+            --youki-version "${{ needs.resolve-vars.outputs.youki_version }}" \
+            --youki-sha256 "${{ needs.resolve-vars.outputs.youki_sha256 }}" \
+            --agent-bin "$PWD/staging/arcbox-agent" \
+            --rootfs "$PWD/staging/rootfs.squashfs" \
+            --arcbox-sha "${{ needs.build-agent.outputs.arcbox_sha }}" \
             --output-dir "$PWD/dist"
 
-          TARBALL="boot-assets-arm64-v${{ steps.vars.outputs.version }}.tar.gz"
+          TARBALL="boot-assets-arm64-v${{ needs.resolve-vars.outputs.version }}.tar.gz"
           echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
-          echo "arcbox_sha=$(git -C arcbox-src rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: boot-assets-release
           path: |
-            dist/${{ steps.build.outputs.tarball }}
-            dist/${{ steps.build.outputs.tarball }}.sha256
+            dist/${{ steps.assemble.outputs.tarball }}
+            dist/${{ steps.assemble.outputs.tarball }}.sha256
             dist/manifest.json
           retention-days: 14
 
+  # ==========================================================================
+  # Create GitHub Release (tag pushes only).
+  # ==========================================================================
   release:
     name: Create GitHub Release
     needs: build

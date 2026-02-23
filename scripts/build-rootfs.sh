@@ -93,21 +93,154 @@ tar -xzf "$ALPINE_MINIROOTFS" -C "$WORK_DIR" 2>/dev/null
 # Install iptables into the rootfs.
 # Required for dockerd to install POSTROUTING MASQUERADE rules that allow
 # container traffic (172.17.0.0/16) to reach the internet via eth0.
-# Uses Docker with --platform linux/arm64/v8 so this works on both Linux CI
-# (x86_64 runners with binfmt_misc) and macOS (Docker Desktop / Colima).
+#
+# Primary path: docker run alpine apk add iptables (Linux runners with Docker).
+# Fallback path: Python APK extraction (macOS runners / local dev without Docker).
 # ---------------------------------------------------------------------------
 echo "install iptables into rootfs"
+_ALPINE_VER="${ALPINE_VERSION:-3.21}"
+_REPO_URL="https://dl-cdn.alpinelinux.org/alpine/v${_ALPINE_VER}/main/aarch64"
+
 if command -v docker >/dev/null 2>&1; then
+  echo "  using Docker to install iptables (libmnl libnftnl iptables)"
+  # Run apk add inside an Alpine container with the rootfs mounted.
+  # On the ARM64 CI runner (ubuntu-24.04-arm) this runs natively; on macOS
+  # with Docker Desktop / colima, Docker handles the platform transparently.
   docker run --rm \
-    --platform linux/arm64/v8 \
-    -v "$WORK_DIR:/rootfs" \
-    alpine:"${ALPINE_VERSION:-3.21}" \
-    apk add --no-scripts --no-cache -p /rootfs iptables
-  echo "iptables installed into rootfs"
+    -v "${WORK_DIR}:/rootfs" \
+    "alpine:${_ALPINE_VER}" \
+    apk add --no-cache \
+      --root /rootfs \
+      --no-scripts \
+      --allow-untrusted \
+      --initdb \
+      -X "${_REPO_URL}" \
+      libmnl libnftnl iptables || {
+    echo "docker apk add failed" >&2
+    exit 1
+  }
 else
-  echo "warning: docker not available; iptables not installed in rootfs" >&2
-  echo "container networking (MASQUERADE) will not work" >&2
+  echo "  Docker not available; using Python APK extraction (fallback)"
+  python3 - "$WORK_DIR" "$_REPO_URL" <<'PYEOF'
+import sys, io, gzip, tarfile, zlib, struct, urllib.request, urllib.error
+
+destdir  = sys.argv[1]
+repo_url = sys.argv[2]
+# Packages required for iptables to run inside the ArcBox guest VM.
+# iptables: firewall tool used by dockerd for MASQUERADE/NAT rules.
+# libmnl:   lightweight netlink library (runtime dep of iptables).
+# libnftnl: netfilter nftables library  (runtime dep of iptables).
+packages = ["libmnl", "libnftnl", "iptables"]
+
+def fetch(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "arcbox-build/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return r.read()
+    except urllib.error.URLError as e:
+        print(f"ERROR: cannot fetch {url}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+def parse_apkindex(raw):
+    """Parse Alpine APKINDEX text into {package_name: version} dict."""
+    versions, entry = {}, {}
+    for line in raw.decode("utf-8").splitlines():
+        if not line:
+            if "P" in entry and "V" in entry:
+                versions[entry["P"]] = entry["V"]
+            entry = {}
+        elif ":" in line:
+            k, _, v = line.partition(":")
+            entry[k] = v
+    if "P" in entry and "V" in entry:
+        versions[entry["P"]] = entry["V"]
+    return versions
+
+def apk_data_offset(apk_bytes):
+    """
+    Return byte offset of the data tar.gz stream within an Alpine APK file.
+    Alpine APK = concatenated gzip streams: [sig.gz?] + control.tar.gz + data.tar.gz.
+    Uses raw-deflate decompressobj (wbits=-15) to track exact stream boundaries
+    without the read-ahead buffering that affects the high-level gzip module.
+    """
+    last, pos = 0, 0
+    while pos + 10 <= len(apk_bytes):
+        if apk_bytes[pos:pos+2] != b'\x1f\x8b':
+            break
+        flg, p = apk_bytes[pos + 3], pos + 10
+        if flg & 4:   # FEXTRA: skip extra field
+            p += 2 + struct.unpack_from('<H', apk_bytes, p)[0]
+        if flg & 8:   # FNAME: skip null-terminated filename
+            while p < len(apk_bytes) and apk_bytes[p]: p += 1
+            p += 1
+        if flg & 16:  # FCOMMENT: skip null-terminated comment
+            while p < len(apk_bytes) and apk_bytes[p]: p += 1
+            p += 1
+        if flg & 2:   # FHCRC: skip header CRC16
+            p += 2
+        d = zlib.decompressobj(wbits=-15)
+        try:
+            d.decompress(apk_bytes[p:])
+            # d.unused_data = 8-byte gzip footer (CRC32+ISIZE) + remaining streams.
+            footer_start = len(apk_bytes) - len(d.unused_data)
+            last, pos = pos, footer_start + 8
+        except zlib.error:
+            break
+    return last
+
+def extract_apk(apk_bytes, destdir):
+    """Extract package data files from an Alpine APK into destdir."""
+    off = apk_data_offset(apk_bytes)
+    with gzip.open(io.BytesIO(apk_bytes[off:])) as gz:
+        with tarfile.open(fileobj=gz) as tar:
+            members = [m for m in tar.getmembers() if not m.name.startswith(".")]
+            try:
+                # Python 3.12+: filter="fully_trusted" suppresses DeprecationWarning.
+                tar.extractall(destdir, members=members, filter="fully_trusted")
+            except TypeError:
+                # Python < 3.12 does not accept the filter parameter.
+                tar.extractall(destdir, members=members)
+
+print("  downloading Alpine package index...")
+idx_gz = fetch(f"{repo_url}/APKINDEX.tar.gz")
+with gzip.open(io.BytesIO(idx_gz)) as gz:
+    with tarfile.open(fileobj=gz) as t:
+        idx_member = next((m for m in t.getmembers() if m.name == "APKINDEX"), None)
+        if not idx_member:
+            print("ERROR: APKINDEX not found in APKINDEX.tar.gz", file=sys.stderr)
+            sys.exit(1)
+        versions = parse_apkindex(t.extractfile(idx_member).read())
+
+for pkg in packages:
+    ver = versions.get(pkg)
+    if not ver:
+        print(f"ERROR: package '{pkg}' not found in Alpine index", file=sys.stderr)
+        sys.exit(1)
+    url = f"{repo_url}/{pkg}-{ver}.apk"
+    print(f"  installing: {pkg}-{ver}")
+    extract_apk(fetch(url), destdir)
+
+print("  iptables packages installed")
+PYEOF
 fi
+unset _ALPINE_VER _REPO_URL
+
+# Force iptables symlinks to use the legacy (xtables) backend.
+# Alpine 3.21+ defaults /sbin/iptables → xtables-nft-multi (nftables backend),
+# but the ArcBox guest kernel loads xtables modules (ip_tables, iptable_nat) in
+# Stage 1 initramfs — not nf_tables. Override the symlinks so dockerd's iptables
+# calls use the xtables kernel API directly.
+_legacy_bin="$(find "$WORK_DIR" -name "xtables-legacy-multi" -type f 2>/dev/null | head -1)"
+if [[ -n "$_legacy_bin" ]]; then
+  _bin_dir="$(dirname "$_legacy_bin")"
+  for _cmd in iptables iptables-restore iptables-save ip6tables ip6tables-restore ip6tables-save; do
+    ln -sfn xtables-legacy-multi "$_bin_dir/$_cmd"
+  done
+  echo "iptables → xtables-legacy-multi (legacy xtables backend)"
+else
+  echo "warning: xtables-legacy-multi not found; container networking may fail" >&2
+fi
+unset _legacy_bin _bin_dir _cmd
 
 # ---------------------------------------------------------------------------
 # Install arcbox-agent.
