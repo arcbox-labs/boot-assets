@@ -106,7 +106,10 @@ if command -v docker >/dev/null 2>&1; then
   # Run apk add inside an Alpine container with the rootfs mounted.
   # On the ARM64 CI runner (ubuntu-24.04-arm) this runs natively; on macOS
   # with Docker Desktop / colima, Docker handles the platform transparently.
+  # Run as the current user so extracted files are host-user-owned and the
+  # cleanup trap (rm -rf "$WORK_DIR") can remove them without sudo.
   docker run --rm \
+    --user "$(id -u):$(id -g)" \
     -v "${WORK_DIR}:/rootfs" \
     "alpine:${_ALPINE_VER}" \
     apk add --no-cache \
