@@ -293,8 +293,8 @@ RUNTIME_CONTAINERD_SHA256="${RUNTIME_CONTAINERD_SHA256:-$(shasum -a 256 "$WORK_D
 RUNTIME_YOUKI_SHA256="${RUNTIME_YOUKI_SHA256:-$(shasum -a 256 "$WORK_DIR/runtime/bin/youki" | awk '{print $1}')}"
 
 # schema_version 3: adds modloop (Alpine kernel modules squashfs).
-# Stage 1 bind-mounts modloop/modules/<kver> into /newroot/lib/modules so that
-# Stage 2 has a fully functional /lib/modules and modprobe works normally.
+# Stage 1 bind-mounts modloop/modules into Stage 2 so that modprobe works
+# normally after switch_root.
 cat > "$WORK_DIR/manifest.json" <<EOF
 {
   "schema_version": 3,

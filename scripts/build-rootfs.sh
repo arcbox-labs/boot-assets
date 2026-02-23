@@ -13,9 +13,9 @@
 #   - Stage 2 /init script (network, NTP, cgroups, Docker storage, agent)
 #   - All required mount points
 #
-# Note: kernel modules are NOT included here. Stage 1 loads all needed
-# modules before switch_root; they remain loaded in the kernel after the
-# root switch.
+# Note: kernel modules are NOT included here. Stage 1 mounts modloop and
+# bind-mounts /lib/modules into Stage 2 before switch_root; modules are then
+# loaded on demand via modprobe (plus a small bootstrap set loaded by Stage 1).
 set -euo pipefail
 
 AGENT_BIN=""
@@ -297,13 +297,13 @@ chmod +x "$WORK_DIR/usr/share/udhcpc/default.script"
 # At entry point, the following are already available:
 #   - /proc, /sys, /dev  (moved from Stage 1 via mount --move)
 #   - /arcbox            (VirtioFS mount moved from Stage 1)
-#   - All kernel modules already loaded by Stage 1
+#   - /lib/modules       (bind-mounted from modloop by Stage 1)
 # ---------------------------------------------------------------------------
 cat > "$WORK_DIR/init" <<'INIT_EOF'
 #!/bin/sh
 # ArcBox Stage 2 init — running inside squashfs+overlay rootfs.
 #
-# All kernel modules have been loaded by Stage 1 before switch_root.
+# Stage 1 loaded bootstrap modules and bind-mounted full /lib/modules from modloop.
 # /proc, /sys, /dev, and /arcbox are already mounted (moved from Stage 1).
 
 /bin/busybox mount -t devpts devpts /dev/pts 2>/dev/null || true
