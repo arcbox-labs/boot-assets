@@ -258,8 +258,15 @@ if ! mountpoint -q /arcbox; then
     mount -t virtiofs arcbox /arcbox 2>/dev/null || true
 fi
 
-# Mount host home share.
-if ! mountpoint -q /host-home; then
+# Mount /Users share for transparent macOS path support.
+# This allows `docker run -v /Users/foo/project:/app` to work directly.
+if ! mountpoint -q /Users; then
+    mkdir -p /Users
+    mount -t virtiofs users /Users 2>/dev/null || true
+fi
+
+# Legacy: mount host home share if /Users share is not available.
+if ! mountpoint -q /Users && ! mountpoint -q /host-home; then
     mount -t virtiofs home /host-home 2>/dev/null || true
 fi
 
