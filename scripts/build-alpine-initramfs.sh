@@ -267,6 +267,24 @@ fi
 /bin/busybox mkdir -p /newroot/sys/fs/cgroup
 /bin/busybox mount -t cgroup2 cgroup2 /newroot/sys/fs/cgroup 2>/dev/null || true
 
+# Mount VirtioFS arcbox share early so we can read the host timestamp.
+# The share is re-mounted by OpenRC's local service after switch_root.
+/bin/busybox mkdir -p /newroot/arcbox
+/bin/busybox mount -t virtiofs arcbox /newroot/arcbox 2>/dev/null || true
+
+# Set system clock from host timestamp written to the VirtioFS share.
+# Without this, the VM boots at epoch (1970) because ARM VMs have no RTC,
+# causing TLS certificate validation failures in dockerd and chronyd.
+if [ -f /newroot/arcbox/.host_time ]; then
+  HOST_TS=$(/bin/busybox cat /newroot/arcbox/.host_time)
+  if [ -n "$HOST_TS" ]; then
+    # busybox date -s expects @epoch format
+    /bin/busybox date -s "@${HOST_TS}" >/dev/null 2>&1 && \
+      log "System clock set from host: $(/bin/busybox date -Iseconds)" || \
+      log "WARNING: failed to set system clock from host"
+  fi
+fi
+
 # Write fallback DNS resolvers so dockerd can resolve registries.
 # DHCP may update this later, but dockerd needs DNS at startup.
 if [ ! -f /newroot/etc/resolv.conf ] || ! /bin/busybox grep -q '^nameserver' /newroot/etc/resolv.conf 2>/dev/null; then
