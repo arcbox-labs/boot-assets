@@ -6,16 +6,14 @@
 #
 # This initramfs is intentionally minimal. Its only job is:
 #   1. Mount /proc, /sys, /dev.
-#   2. Load bootstrap kernel modules (virtio, ext4, vsock, virtiofs, net).
-#   3. Mount /dev/vda (ext4 rootfs) at /newroot.
-#   4. exec switch_root /newroot /sbin/init  → standard Alpine OpenRC.
+#   2. Mount /dev/vda (ext4 rootfs) at /newroot.
+#   3. exec switch_root /newroot /sbin/init  → standard Alpine OpenRC.
 #
 # Everything else (VirtioFS shares, networking, cgroups, Docker, arcbox-agent)
 # is handled by OpenRC services inside the rootfs.
 set -euo pipefail
 
 BASE_INITRAMFS=""
-MODLOOP=""
 OUTPUT=""
 
 usage() {
@@ -25,9 +23,6 @@ Usage: build-alpine-initramfs.sh [options]
 Required options:
   --base-initramfs <path>  Path to base Alpine initramfs (provides busybox)
   --output <path>          Output initramfs path
-
-Optional:
-  --modloop <path>         Path to Alpine modloop image (provides kernel .ko files)
 USAGE_EOF
 }
 
@@ -35,10 +30,6 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --base-initramfs)
       BASE_INITRAMFS="$2"
-      shift 2
-      ;;
-    --modloop)
-      MODLOOP="$2"
       shift 2
       ;;
     --output)
@@ -69,25 +60,10 @@ for file in "$BASE_INITRAMFS"; do
   fi
 done
 
-if [[ -n "$MODLOOP" ]]; then
-  if [[ ! -f "$MODLOOP" ]]; then
-    echo "required file not found: $MODLOOP" >&2
-    exit 1
-  fi
-  if ! command -v unsquashfs >/dev/null 2>&1; then
-    echo "unsquashfs is required but not found in PATH" >&2
-    exit 1
-  fi
-fi
-
 WORK_DIR="$(mktemp -d /tmp/arcbox-initramfs.XXXXXX)"
-MODLOOP_EXTRACT=""
 
 cleanup() {
   rm -rf "$WORK_DIR"
-  if [[ -n "$MODLOOP_EXTRACT" ]]; then
-    rm -rf "$MODLOOP_EXTRACT"
-  fi
 }
 trap cleanup EXIT
 
@@ -101,81 +77,6 @@ echo "extract base initramfs: $BASE_INITRAMFS"
     cpio -idm < "$BASE_INITRAMFS" 2>/dev/null
   fi
 )
-
-if [[ -n "$MODLOOP" ]]; then
-  # -------------------------------------------------------------------------
-  # Extract Alpine modloop and copy only bootstrap modules into initramfs.
-  # -------------------------------------------------------------------------
-  MODLOOP_EXTRACT="$(mktemp -d /tmp/arcbox-modloop.XXXXXX)"
-  echo "extract modloop: $MODLOOP"
-  unsquashfs -f -d "$MODLOOP_EXTRACT" "$MODLOOP" >/dev/null 2>&1
-
-  KERNEL_VERSION="$(ls "$WORK_DIR/lib/modules/" 2>/dev/null | head -1 || true)"
-  if [[ -z "$KERNEL_VERSION" ]]; then
-    KERNEL_VERSION="$(ls "$MODLOOP_EXTRACT/modules/" 2>/dev/null | head -1 || true)"
-  fi
-  if [[ -z "$KERNEL_VERSION" ]]; then
-    echo "unable to detect kernel version from initramfs/modloop" >&2
-    exit 1
-  fi
-  echo "kernel version: $KERNEL_VERSION"
-
-  copy_module() {
-    local src_dir="$1"
-    local dest_dir="$2"
-    local mod_file="$3"
-    local src="$src_dir/$mod_file"
-    if [[ -f "$src" ]]; then
-      mkdir -p "$dest_dir"
-      cp "$src" "$dest_dir/"
-    fi
-  }
-
-  MODS_SRC="$MODLOOP_EXTRACT/modules/$KERNEL_VERSION/kernel"
-  MODS_DST="$WORK_DIR/lib/modules/$KERNEL_VERSION/kernel"
-
-  # VirtIO core.
-  copy_module "$MODS_SRC/drivers/virtio" "$MODS_DST/drivers/virtio" virtio.ko
-  copy_module "$MODS_SRC/drivers/virtio" "$MODS_DST/drivers/virtio" virtio_ring.ko
-  copy_module "$MODS_SRC/drivers/virtio" "$MODS_DST/drivers/virtio" virtio_pci.ko
-  copy_module "$MODS_SRC/drivers/virtio" "$MODS_DST/drivers/virtio" virtio_pci_modern_dev.ko
-  copy_module "$MODS_SRC/drivers/virtio" "$MODS_DST/drivers/virtio" virtio_pci_legacy_dev.ko
-  copy_module "$MODS_SRC/drivers/virtio" "$MODS_DST/drivers/virtio" virtio_mmio.ko
-
-  # VirtIO console.
-  copy_module "$MODS_SRC/drivers/char" "$MODS_DST/drivers/char" virtio_console.ko
-
-  # VirtIO network.
-  copy_module "$MODS_SRC/drivers/net" "$MODS_DST/drivers/net" net_failover.ko
-  copy_module "$MODS_SRC/drivers/net" "$MODS_DST/drivers/net" virtio_net.ko
-
-  # VirtIO block (needed to access /dev/vda).
-  copy_module "$MODS_SRC/drivers/block" "$MODS_DST/drivers/block" virtio_blk.ko
-
-  # VirtioFS (needed for VirtioFS shares mounted later by OpenRC).
-  copy_module "$MODS_SRC/fs/fuse" "$MODS_DST/fs/fuse" fuse.ko
-  copy_module "$MODS_SRC/fs/fuse" "$MODS_DST/fs/fuse" virtiofs.ko
-
-  # vSock transport: must be loaded before switch_root because the kernel does
-  # not re-probe the virtio-vsock device after switch_root (no udev).
-  copy_module "$MODS_SRC/net/vmw_vsock" "$MODS_DST/net/vmw_vsock" vsock.ko
-  copy_module "$MODS_SRC/net/vmw_vsock" "$MODS_DST/net/vmw_vsock" vmw_vsock_virtio_transport_common.ko
-  copy_module "$MODS_SRC/net/vmw_vsock" "$MODS_DST/net/vmw_vsock" vmw_vsock_virtio_transport.ko
-
-  # ext4 filesystem (needed to mount /dev/vda rootfs).
-  copy_module "$MODS_SRC/fs/ext4" "$MODS_DST/fs/ext4" ext4.ko
-  copy_module "$MODS_SRC/fs/jbd2" "$MODS_DST/fs/jbd2" jbd2.ko
-  copy_module "$MODS_SRC/fs" "$MODS_DST/fs" mbcache.ko
-  copy_module "$MODS_SRC/lib" "$MODS_DST/lib" crc16.ko
-
-  # Module metadata so modprobe can resolve dependencies.
-  mkdir -p "$WORK_DIR/lib/modules/$KERNEL_VERSION"
-  cp "$MODLOOP_EXTRACT/modules/$KERNEL_VERSION/modules.dep" \
-     "$WORK_DIR/lib/modules/$KERNEL_VERSION/modules.dep" 2>/dev/null \
-     || echo "warning: modules.dep not found in modloop" >&2
-  cp "$MODLOOP_EXTRACT/modules/$KERNEL_VERSION/modules.alias" \
-     "$WORK_DIR/lib/modules/$KERNEL_VERSION/modules.alias" 2>/dev/null || true
-fi
 
 # ---------------------------------------------------------------------------
 # Write the /init script.
@@ -201,53 +102,6 @@ done
 [ -c /dev/hvc0 ] && exec </dev/hvc0 >/dev/hvc0 2>&1
 
 log() { echo "initramfs: $*"; }
-
-KERNEL_VERSION="$(/bin/busybox uname -r)"
-MODULE_DIR="/lib/modules/$KERNEL_VERSION"
-
-load_ko() {
-  local name="$1"
-  local relpath="$2"
-  /sbin/modprobe "$name" 2>/dev/null && return 0
-  local full_path="$MODULE_DIR/$relpath"
-  [ -f "$full_path" ] && /bin/busybox insmod "$full_path" 2>/dev/null && return 0
-  return 0
-}
-
-log "Loading bootstrap kernel modules..."
-
-# VirtIO core.
-load_ko virtio                 "kernel/drivers/virtio/virtio.ko"
-load_ko virtio_ring            "kernel/drivers/virtio/virtio_ring.ko"
-load_ko virtio_pci_legacy_dev  "kernel/drivers/virtio/virtio_pci_legacy_dev.ko"
-load_ko virtio_pci_modern_dev  "kernel/drivers/virtio/virtio_pci_modern_dev.ko"
-load_ko virtio_pci             "kernel/drivers/virtio/virtio_pci.ko"
-load_ko virtio_mmio            "kernel/drivers/virtio/virtio_mmio.ko"
-
-# VirtIO console.
-load_ko virtio_console         "kernel/drivers/char/virtio_console.ko"
-
-# VirtIO block (for /dev/vda).
-load_ko virtio_blk             "kernel/drivers/block/virtio_blk.ko"
-
-# ext4 filesystem (for rootfs).
-load_ko crc16                  "kernel/lib/crc16.ko"
-load_ko mbcache                "kernel/fs/mbcache.ko"
-load_ko jbd2                   "kernel/fs/jbd2/jbd2.ko"
-load_ko ext4                   "kernel/fs/ext4/ext4.ko"
-
-# vSock transport: must be loaded before switch_root (no udev to re-probe).
-load_ko vsock                           "kernel/net/vmw_vsock/vsock.ko"
-load_ko vmw_vsock_virtio_transport_common "kernel/net/vmw_vsock/vmw_vsock_virtio_transport_common.ko"
-load_ko vmw_vsock_virtio_transport      "kernel/net/vmw_vsock/vmw_vsock_virtio_transport.ko"
-
-# VirtioFS (loaded now so OpenRC services can mount shares immediately).
-load_ko fuse                   "kernel/fs/fuse/fuse.ko"
-load_ko virtiofs               "kernel/fs/fuse/virtiofs.ko"
-
-# VirtIO network.
-load_ko net_failover           "kernel/drivers/net/net_failover.ko"
-load_ko virtio_net             "kernel/drivers/net/virtio_net.ko"
 
 # Wait for /dev/vda to appear (up to 2 seconds).
 log "Waiting for /dev/vda..."

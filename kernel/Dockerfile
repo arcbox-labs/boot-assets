@@ -6,6 +6,7 @@ RUN apt-get update && \
       ca-certificates \
       curl \
       xz-utils \
+      bsdextrautils \
       python3 \
       build-essential \
       gcc-aarch64-linux-gnu \
@@ -15,7 +16,6 @@ RUN apt-get update && \
       flex \
       libelf-dev \
       libssl-dev \
-      kmod \
       file && \
     rm -rf /var/lib/apt/lists/*
 

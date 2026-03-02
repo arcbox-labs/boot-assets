@@ -108,14 +108,13 @@ RUN apk add --no-cache \
 
 # Enable OpenRC services across all required runlevels.
 # sysinit: devfs (populate /dev), dmesg (kernel log buffer), cgroups (mount cgroup2).
-# boot: modules (/etc/modules loading), sysctl (ip_forward etc), bootmisc, hostname.
+# boot: sysctl (ip_forward etc), bootmisc, hostname.
 # default: networking, docker, chrony, arcbox-agent, local.
 RUN rc-update add devfs sysinit && \
     rc-update add procfs sysinit && \
     rc-update add sysfs sysinit && \
     rc-update add dmesg sysinit && \
     rc-update add cgroups sysinit && \
-    rc-update add modules boot && \
     rc-update add sysctl boot && \
     rc-update add bootmisc boot && \
     rc-update add hostname boot && \
@@ -125,24 +124,6 @@ RUN rc-update add devfs sysinit && \
 
 # Add serial console on hvc0 (virtio console) for boot diagnostics.
 RUN sed -i '/^#ttyS0/a hvc0::respawn:/sbin/getty 115200 hvc0' /etc/inittab || true
-
-# Configure kernel modules to load at boot.
-RUN printf '%s\n' \
-    vsock \
-    vmw_vsock_virtio_transport_common \
-    vmw_vsock_virtio_transport \
-    overlay \
-    ip_tables \
-    iptable_nat \
-    iptable_filter \
-    nf_conntrack \
-    xt_addrtype \
-    xt_conntrack \
-    xt_MASQUERADE \
-    br_netfilter \
-    bridge \
-    veth \
-    > /etc/modules
 
 # Configure network interfaces.
 RUN printf '%s\n' \

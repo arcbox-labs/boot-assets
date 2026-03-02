@@ -119,11 +119,16 @@ print(str((manifest_path.parent / config_rel).resolve()))
 PY
 }
 
-mapfile -t manifest_values < <(read_manifest)
-KERNEL_VERSION="${manifest_values[0]}"
-SOURCE_URL="${manifest_values[1]}"
-SOURCE_SHA256="${manifest_values[2]}"
-CONFIG_PATH="${manifest_values[3]}"
+manifest_values="$(read_manifest)"
+KERNEL_VERSION="$(printf '%s\n' "$manifest_values" | sed -n '1p')"
+SOURCE_URL="$(printf '%s\n' "$manifest_values" | sed -n '2p')"
+SOURCE_SHA256="$(printf '%s\n' "$manifest_values" | sed -n '3p')"
+CONFIG_PATH="$(printf '%s\n' "$manifest_values" | sed -n '4p')"
+
+if [[ -z "$KERNEL_VERSION" || -z "$SOURCE_URL" || -z "$SOURCE_SHA256" || -z "$CONFIG_PATH" ]]; then
+  echo "failed to parse kernel manifest values" >&2
+  exit 1
+fi
 
 if [[ ! -f "$CONFIG_PATH" ]]; then
   echo "kernel config not found: $CONFIG_PATH" >&2
