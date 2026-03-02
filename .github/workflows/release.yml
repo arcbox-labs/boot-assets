@@ -210,22 +210,12 @@ jobs:
       - name: Checkout boot-assets repository
         uses: actions/checkout@v4
 
-      - name: Download Alpine modloop
-        run: |
-          chmod +x scripts/*.sh
-          ./scripts/download-kernel.sh \
-            --arch arm64 \
-            --alpine-version "${{ needs.resolve-vars.outputs.alpine_version }}" \
-            --flavor "${{ needs.resolve-vars.outputs.alpine_flavor }}" \
-            --out-dir "$PWD/build/arm64/base" \
-            --no-minirootfs
-
       - name: Build rootfs.ext4
         run: |
+          chmod +x scripts/*.sh
           ./scripts/build-alpine-rootfs.sh \
             --output "$PWD/build/arm64/work/rootfs.ext4" \
-            --alpine-version "${{ needs.resolve-vars.outputs.alpine_version }}" \
-            --modloop "$PWD/build/arm64/base/modloop-${{ needs.resolve-vars.outputs.alpine_flavor }}"
+            --alpine-version "${{ needs.resolve-vars.outputs.alpine_version }}"
 
       - name: Upload rootfs.ext4
         uses: actions/upload-artifact@v4
@@ -235,12 +225,36 @@ jobs:
           retention-days: 1
 
   # ==========================================================================
+  # Stage 1c: Build kernel from kernel.org source tarball.
+  # ==========================================================================
+  build-kernel:
+    name: Build Kernel
+    needs: [resolve-vars]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout boot-assets repository
+        uses: actions/checkout@v4
+
+      - name: Build kernel
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/build-kernel.sh --arch arm64 --out-dir "$PWD/build/kernel"
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-artifacts
+          path: build/kernel
+          retention-days: 1
+
+  # ==========================================================================
   # Stage 2: Assemble final tarball (kernel + initramfs + rootfs + runtime).
-  # Runs on macOS for kernel format conversion and initramfs rebuild.
+  # Runs on macOS to assemble all pre-built artifacts.
   # ==========================================================================
   build:
     name: Assemble Boot Assets
-    needs: [resolve-vars, build-agent, build-rootfs]
+    needs: [resolve-vars, build-agent, build-rootfs, build-kernel]
     runs-on: macos-14
 
     outputs:
@@ -258,12 +272,6 @@ jobs:
             "https://github.com/${{ needs.resolve-vars.outputs.arcbox_repo }}.git" \
             arcbox-src
 
-      - name: Install build dependencies
-        run: |
-          if ! command -v unsquashfs >/dev/null 2>&1; then
-            brew install squashfs
-          fi
-
       - name: Download agent binary
         uses: actions/download-artifact@v4
         with:
@@ -275,6 +283,12 @@ jobs:
         with:
           name: rootfs-ext4
           path: staging
+
+      - name: Download kernel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-artifacts
+          path: staging/kernel
 
       - name: Build release assets
         id: assemble
@@ -296,6 +310,7 @@ jobs:
             --youki-sha256 "${{ needs.resolve-vars.outputs.youki_sha256 }}" \
             --agent-bin "$PWD/staging/arcbox-agent" \
             --rootfs "$PWD/staging/rootfs.ext4" \
+            --kernel-dir "$PWD/staging/kernel" \
             --arcbox-sha "${{ needs.build-agent.outputs.arcbox_sha }}" \
             --output-dir "$PWD/dist"
 
