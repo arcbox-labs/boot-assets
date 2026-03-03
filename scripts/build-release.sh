@@ -19,9 +19,9 @@ OUTPUT_DIR="$ROOT_DIR/dist"
 EROFS_COMPRESSION="lz4hc"
 
 # Optional metadata for manifest.
-SOURCE_REPO="${ARCBOX_REPO:-unknown}"
-SOURCE_REF="${ARCBOX_REF:-unknown}"
-SOURCE_SHA="${ARCBOX_SHA:-unknown}"
+SOURCE_REPO="${KERNEL_REPO:-unknown}"
+SOURCE_REF="${KERNEL_REF:-unknown}"
+SOURCE_SHA="${KERNEL_SHA:-unknown}"
 KERNEL_VERSION="${KERNEL_VERSION:-unknown}"
 
 usage() {

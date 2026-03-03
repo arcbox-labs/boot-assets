@@ -10,7 +10,7 @@ Each release publishes:
 
 The tarball contains:
 
-1. `kernel` — self-compiled Linux kernel (all drivers built-in, `CONFIG_MODULES=n`)
+1. `kernel` — pre-built Linux kernel from [`arcbox-labs/kernel`](https://github.com/arcbox-labs/kernel) (all drivers built-in, `CONFIG_MODULES=n`)
 2. `rootfs.erofs` — minimal read-only rootfs (busybox + mkfs.btrfs + iptables-legacy + CA certs)
 3. `manifest.json` — schema version 6
 
@@ -38,7 +38,7 @@ Trigger:
 
 Pipeline stages:
 
-1. **Build kernel** — clones `arcbox-kernel`, builds ARM64 kernel via Docker
+1. **Download kernel** — downloads pre-built ARM64 kernel from [`arcbox-labs/kernel`](https://github.com/arcbox-labs/kernel) release
 2. **Build EROFS rootfs** — creates minimal rootfs from Alpine static binaries
 3. **Assemble** — packages kernel + rootfs.erofs + manifest.json into tarball
 4. **Release** — publishes to GitHub Releases and Cloudflare R2
@@ -49,16 +49,19 @@ Prerequisites:
 
 1. Docker (for extracting static Alpine binaries)
 2. `mkfs.erofs` (`erofs-utils`)
-3. Kernel binary from `arcbox-kernel`
+3. Kernel binary from [`arcbox-labs/kernel`](https://github.com/arcbox-labs/kernel) release
 
 ```bash
+# Download kernel from arcbox-labs/kernel release
+gh release download v0.1.0 --repo arcbox-labs/kernel --pattern "kernel-arm64" --dir build/
+
 # Build EROFS rootfs only
 ./scripts/build-erofs-rootfs.sh --output build/rootfs.erofs
 
-# Full release build (requires pre-built kernel)
+# Full release build
 ./scripts/build-release.sh \
   --version 0.1.0 \
-  --kernel ../arcbox-kernel/output/kernel-arm64
+  --kernel build/kernel-arm64
 ```
 
 Output files are written to `dist/`.

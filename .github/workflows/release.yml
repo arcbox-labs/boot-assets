@@ -10,25 +10,9 @@ on:
         description: "Release version (e.g. 0.1.0)"
         required: true
         type: string
-      kernel_repo:
-        description: "Kernel source repository"
-        required: false
-        default: "arcbox-labs/arcbox-kernel"
-        type: string
-      kernel_ref:
-        description: "Kernel source ref (branch/tag/sha)"
-        required: false
-        default: "master"
-        type: string
-      arcbox_repo:
-        description: "ArcBox source repository (for manifest)"
-        required: false
-        default: "arcbox-labs/arcbox"
-        type: string
-      arcbox_ref:
-        description: "ArcBox source ref (for manifest)"
-        required: false
-        default: "master"
+      kernel_tag:
+        description: "arcbox-labs/kernel release tag to download (e.g. v0.1.0)"
+        required: true
         type: string
 
 permissions:
@@ -36,7 +20,7 @@ permissions:
 
 jobs:
   # ==========================================================================
-  # Stage 0: Resolve version and build parameters.
+  # Stage 0: Resolve version and kernel tag.
   # ==========================================================================
   resolve-vars:
     name: Resolve Build Variables
@@ -44,10 +28,7 @@ jobs:
 
     outputs:
       version: ${{ steps.vars.outputs.version }}
-      kernel_repo: ${{ steps.vars.outputs.kernel_repo }}
-      kernel_ref: ${{ steps.vars.outputs.kernel_ref }}
-      arcbox_repo: ${{ steps.vars.outputs.arcbox_repo }}
-      arcbox_ref: ${{ steps.vars.outputs.arcbox_ref }}
+      kernel_tag: ${{ steps.vars.outputs.kernel_tag }}
 
     steps:
       - name: Resolve build variables
@@ -63,49 +44,53 @@ jobs:
             exit 1
           fi
 
-          KERNEL_REPO="${{ github.event.inputs.kernel_repo }}"
-          KERNEL_REF="${{ github.event.inputs.kernel_ref }}"
-          ARCBOX_REPO="${{ github.event.inputs.arcbox_repo }}"
-          ARCBOX_REF="${{ github.event.inputs.arcbox_ref }}"
-
-          [ -z "$KERNEL_REPO" ] && KERNEL_REPO="arcbox-labs/arcbox-kernel"
-          [ -z "$KERNEL_REF" ] && KERNEL_REF="master"
-          [ -z "$ARCBOX_REPO" ] && ARCBOX_REPO="arcbox-labs/arcbox"
-          [ -z "$ARCBOX_REF" ] && ARCBOX_REF="master"
+          KERNEL_TAG="${{ github.event.inputs.kernel_tag }}"
+          if [ -z "$KERNEL_TAG" ]; then
+            # Tag push: default to latest kernel release.
+            KERNEL_TAG="latest"
+          fi
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "kernel_repo=$KERNEL_REPO" >> "$GITHUB_OUTPUT"
-          echo "kernel_ref=$KERNEL_REF" >> "$GITHUB_OUTPUT"
-          echo "arcbox_repo=$ARCBOX_REPO" >> "$GITHUB_OUTPUT"
-          echo "arcbox_ref=$ARCBOX_REF" >> "$GITHUB_OUTPUT"
+          echo "kernel_tag=$KERNEL_TAG" >> "$GITHUB_OUTPUT"
+
+          echo "=== Resolved ==="
+          echo "  version:    $VERSION"
+          echo "  kernel_tag: $KERNEL_TAG"
 
   # ==========================================================================
-  # Stage 1a: Build kernel (Docker-based, native ARM64).
+  # Stage 1a: Download pre-built kernel from arcbox-labs/kernel release.
   # ==========================================================================
-  build-kernel:
-    name: Build Kernel
+  download-kernel:
+    name: Download Kernel
     needs: resolve-vars
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Clone arcbox-kernel
+      - name: Download kernel from arcbox-labs/kernel
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git clone --depth 1 \
-            --branch "${{ needs.resolve-vars.outputs.kernel_ref }}" \
-            "https://github.com/${{ needs.resolve-vars.outputs.kernel_repo }}.git" \
-            arcbox-kernel
+          KERNEL_TAG="${{ needs.resolve-vars.outputs.kernel_tag }}"
+          mkdir -p staging
 
-      - name: Build kernel
-        run: |
-          cd arcbox-kernel
-          chmod +x scripts/*.sh
-          USE_DOCKER=0 ./scripts/build-kernel.sh
+          if [ "$KERNEL_TAG" = "latest" ]; then
+            echo "==> Downloading latest kernel release"
+            gh release download --repo arcbox-labs/kernel \
+              --pattern "kernel-arm64" --dir staging/
+          else
+            echo "==> Downloading kernel from tag: $KERNEL_TAG"
+            gh release download "$KERNEL_TAG" --repo arcbox-labs/kernel \
+              --pattern "kernel-arm64" --dir staging/
+          fi
 
-      - name: Upload kernel
+          ls -lh staging/
+          echo "==> Kernel downloaded"
+
+      - name: Upload kernel artifact
         uses: actions/upload-artifact@v4
         with:
           name: kernel-arm64
-          path: arcbox-kernel/output/kernel-arm64
+          path: staging/kernel-arm64
           retention-days: 1
 
   # ==========================================================================
@@ -143,7 +128,7 @@ jobs:
   # ==========================================================================
   build:
     name: Assemble Boot Assets
-    needs: [resolve-vars, build-kernel, build-rootfs]
+    needs: [resolve-vars, download-kernel, build-rootfs]
     runs-on: ubuntu-latest
 
     outputs:
@@ -168,6 +153,8 @@ jobs:
 
       - name: Assemble release
         id: assemble
+        env:
+          KERNEL_VERSION: ${{ needs.resolve-vars.outputs.kernel_tag }}
         run: |
           chmod +x scripts/*.sh
 
@@ -176,8 +163,9 @@ jobs:
             --kernel "$PWD/staging/kernel-arm64" \
             --rootfs "$PWD/staging/rootfs.erofs" \
             --arch arm64 \
-            --source-repo "${{ needs.resolve-vars.outputs.arcbox_repo }}" \
-            --source-ref "${{ needs.resolve-vars.outputs.arcbox_ref }}" \
+            --kernel-version "${{ needs.resolve-vars.outputs.kernel_tag }}" \
+            --source-repo "arcbox-labs/kernel" \
+            --source-ref "${{ needs.resolve-vars.outputs.kernel_tag }}" \
             --output-dir "$PWD/dist"
 
           TARBALL="boot-assets-arm64-v${{ needs.resolve-vars.outputs.version }}.tar.gz"
