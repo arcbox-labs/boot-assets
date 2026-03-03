@@ -7,58 +7,28 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (for example: 0.0.1-alpha.3)"
+        description: "Release version (e.g. 0.1.0)"
         required: true
         type: string
+      kernel_repo:
+        description: "Kernel source repository"
+        required: false
+        default: "arcbox-labs/arcbox-kernel"
+        type: string
+      kernel_ref:
+        description: "Kernel source ref (branch/tag/sha)"
+        required: false
+        default: "master"
+        type: string
       arcbox_repo:
-        description: "ArcBox source repository"
+        description: "ArcBox source repository (for manifest)"
         required: false
         default: "arcbox-labs/arcbox"
         type: string
       arcbox_ref:
-        description: "ArcBox source ref (branch/tag/sha)"
+        description: "ArcBox source ref (for manifest)"
         required: false
         default: "master"
-        type: string
-      alpine_version:
-        description: "Alpine release version"
-        required: false
-        default: "3.21"
-        type: string
-      alpine_flavor:
-        description: "Alpine netboot flavor"
-        required: false
-        default: "lts"
-        type: string
-      docker_version:
-        description: "Docker static bundle version"
-        required: false
-        default: "28.0.3"
-        type: string
-      docker_sha256:
-        description: "Docker static bundle sha256"
-        required: false
-        default: "6a5fe587e1224871a87ef46dede1dd65cfb69a2c61e1368556f59c2e78d67d7f"
-        type: string
-      containerd_version:
-        description: "containerd static bundle version"
-        required: false
-        default: "1.7.26"
-        type: string
-      containerd_sha256:
-        description: "containerd static bundle sha256"
-        required: false
-        default: "f35d8eb8467b7875ab768b4b869c9905616d998549e1e0ed993a52eec319dc51"
-        type: string
-      youki_version:
-        description: "youki version"
-        required: false
-        default: "0.5.7"
-        type: string
-      youki_sha256:
-        description: "youki tarball sha256"
-        required: false
-        default: "b3002d9d39b04f797e783745f92cffec9e0caa464254be98aa0b4dfc184f0233"
         type: string
 
 permissions:
@@ -66,7 +36,7 @@ permissions:
 
 jobs:
   # ==========================================================================
-  # Stage 0: Resolve version and default values for all build parameters.
+  # Stage 0: Resolve version and build parameters.
   # ==========================================================================
   resolve-vars:
     name: Resolve Build Variables
@@ -74,16 +44,10 @@ jobs:
 
     outputs:
       version: ${{ steps.vars.outputs.version }}
+      kernel_repo: ${{ steps.vars.outputs.kernel_repo }}
+      kernel_ref: ${{ steps.vars.outputs.kernel_ref }}
       arcbox_repo: ${{ steps.vars.outputs.arcbox_repo }}
       arcbox_ref: ${{ steps.vars.outputs.arcbox_ref }}
-      alpine_version: ${{ steps.vars.outputs.alpine_version }}
-      alpine_flavor: ${{ steps.vars.outputs.alpine_flavor }}
-      docker_version: ${{ steps.vars.outputs.docker_version }}
-      docker_sha256: ${{ steps.vars.outputs.docker_sha256 }}
-      containerd_version: ${{ steps.vars.outputs.containerd_version }}
-      containerd_sha256: ${{ steps.vars.outputs.containerd_sha256 }}
-      youki_version: ${{ steps.vars.outputs.youki_version }}
-      youki_sha256: ${{ steps.vars.outputs.youki_sha256 }}
 
     steps:
       - name: Resolve build variables
@@ -99,204 +63,121 @@ jobs:
             exit 1
           fi
 
+          KERNEL_REPO="${{ github.event.inputs.kernel_repo }}"
+          KERNEL_REF="${{ github.event.inputs.kernel_ref }}"
           ARCBOX_REPO="${{ github.event.inputs.arcbox_repo }}"
           ARCBOX_REF="${{ github.event.inputs.arcbox_ref }}"
-          ALPINE_VERSION="${{ github.event.inputs.alpine_version }}"
-          ALPINE_FLAVOR="${{ github.event.inputs.alpine_flavor }}"
-          DOCKER_VERSION="${{ github.event.inputs.docker_version }}"
-          DOCKER_SHA256="${{ github.event.inputs.docker_sha256 }}"
-          CONTAINERD_VERSION="${{ github.event.inputs.containerd_version }}"
-          CONTAINERD_SHA256="${{ github.event.inputs.containerd_sha256 }}"
-          YOUKI_VERSION="${{ github.event.inputs.youki_version }}"
-          YOUKI_SHA256="${{ github.event.inputs.youki_sha256 }}"
 
+          [ -z "$KERNEL_REPO" ] && KERNEL_REPO="arcbox-labs/arcbox-kernel"
+          [ -z "$KERNEL_REF" ] && KERNEL_REF="master"
           [ -z "$ARCBOX_REPO" ] && ARCBOX_REPO="arcbox-labs/arcbox"
           [ -z "$ARCBOX_REF" ] && ARCBOX_REF="master"
-          [ -z "$ALPINE_VERSION" ] && ALPINE_VERSION="3.21"
-          [ -z "$ALPINE_FLAVOR" ] && ALPINE_FLAVOR="lts"
-          [ -z "$DOCKER_VERSION" ] && DOCKER_VERSION="28.0.3"
-          [ -z "$DOCKER_SHA256" ] && DOCKER_SHA256="6a5fe587e1224871a87ef46dede1dd65cfb69a2c61e1368556f59c2e78d67d7f"
-          [ -z "$CONTAINERD_VERSION" ] && CONTAINERD_VERSION="1.7.26"
-          [ -z "$CONTAINERD_SHA256" ] && CONTAINERD_SHA256="f35d8eb8467b7875ab768b4b869c9905616d998549e1e0ed993a52eec319dc51"
-          [ -z "$YOUKI_VERSION" ] && YOUKI_VERSION="0.5.7"
-          [ -z "$YOUKI_SHA256" ] && YOUKI_SHA256="b3002d9d39b04f797e783745f92cffec9e0caa464254be98aa0b4dfc184f0233"
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "kernel_repo=$KERNEL_REPO" >> "$GITHUB_OUTPUT"
+          echo "kernel_ref=$KERNEL_REF" >> "$GITHUB_OUTPUT"
           echo "arcbox_repo=$ARCBOX_REPO" >> "$GITHUB_OUTPUT"
           echo "arcbox_ref=$ARCBOX_REF" >> "$GITHUB_OUTPUT"
-          echo "alpine_version=$ALPINE_VERSION" >> "$GITHUB_OUTPUT"
-          echo "alpine_flavor=$ALPINE_FLAVOR" >> "$GITHUB_OUTPUT"
-          echo "docker_version=$DOCKER_VERSION" >> "$GITHUB_OUTPUT"
-          echo "docker_sha256=$DOCKER_SHA256" >> "$GITHUB_OUTPUT"
-          echo "containerd_version=$CONTAINERD_VERSION" >> "$GITHUB_OUTPUT"
-          echo "containerd_sha256=$CONTAINERD_SHA256" >> "$GITHUB_OUTPUT"
-          echo "youki_version=$YOUKI_VERSION" >> "$GITHUB_OUTPUT"
-          echo "youki_sha256=$YOUKI_SHA256" >> "$GITHUB_OUTPUT"
 
   # ==========================================================================
-  # Stage 1a: Cross-compile arcbox-agent (macOS → Linux ARM64 musl).
-  # Runs on macOS because the Rust cross-compilation toolchain targets musl.
+  # Stage 1a: Build kernel (Docker-based, native ARM64).
   # ==========================================================================
-  build-agent:
-    name: Build arcbox-agent
+  build-kernel:
+    name: Build Kernel
     needs: resolve-vars
-    runs-on: macos-14
-
-    outputs:
-      arcbox_sha: ${{ steps.agent.outputs.arcbox_sha }}
-
-    steps:
-      - name: Checkout boot-assets repository
-        uses: actions/checkout@v4
-
-      - name: Clone arcbox source
-        run: |
-          git clone --depth 1 \
-            --branch "${{ needs.resolve-vars.outputs.arcbox_ref }}" \
-            "https://github.com/${{ needs.resolve-vars.outputs.arcbox_repo }}.git" \
-            arcbox-src
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-unknown-linux-musl
-
-      - name: Install protoc
-        run: |
-          if ! command -v protoc >/dev/null 2>&1; then
-            brew install protobuf
-          fi
-
-      - name: Cross-compile arcbox-agent
-        id: agent
-        run: |
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="${CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER:-rust-lld}" \
-          cargo build \
-            --manifest-path arcbox-src/Cargo.toml \
-            -p arcbox-agent \
-            --target aarch64-unknown-linux-musl \
-            --release
-
-          AGENT_BIN="arcbox-src/target/aarch64-unknown-linux-musl/release/arcbox-agent"
-          if [[ ! -f "$AGENT_BIN" ]]; then
-            echo "agent binary not found: $AGENT_BIN" >&2
-            exit 1
-          fi
-
-          ARCBOX_SHA="$(git -C arcbox-src rev-parse HEAD)"
-          echo "arcbox_sha=$ARCBOX_SHA" >> "$GITHUB_OUTPUT"
-
-          mkdir -p staging
-          cp "$AGENT_BIN" staging/arcbox-agent
-
-      - name: Upload agent binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: agent-binary
-          path: staging/arcbox-agent
-          retention-days: 1
-
-  # ==========================================================================
-  # Stage 1b: Build rootfs.ext4 on Ubuntu where Docker is available.
-  # The ext4 rootfs is built inside a privileged Docker container so loop
-  # devices can be used to create the filesystem image.
-  # ==========================================================================
-  build-rootfs:
-    name: Build rootfs.ext4
-    needs: [resolve-vars]
     runs-on: ubuntu-24.04-arm
 
     steps:
-      - name: Checkout boot-assets repository
-        uses: actions/checkout@v4
-
-      - name: Download Alpine modloop
+      - name: Clone arcbox-kernel
         run: |
+          git clone --depth 1 \
+            --branch "${{ needs.resolve-vars.outputs.kernel_ref }}" \
+            "https://github.com/${{ needs.resolve-vars.outputs.kernel_repo }}.git" \
+            arcbox-kernel
+
+      - name: Build kernel
+        run: |
+          cd arcbox-kernel
           chmod +x scripts/*.sh
-          ./scripts/download-kernel.sh \
-            --arch arm64 \
-            --alpine-version "${{ needs.resolve-vars.outputs.alpine_version }}" \
-            --flavor "${{ needs.resolve-vars.outputs.alpine_flavor }}" \
-            --out-dir "$PWD/build/arm64/base" \
-            --no-minirootfs
+          USE_DOCKER=0 ./scripts/build-kernel.sh
 
-      - name: Build rootfs.ext4
-        run: |
-          ./scripts/build-alpine-rootfs.sh \
-            --output "$PWD/build/arm64/work/rootfs.ext4" \
-            --alpine-version "${{ needs.resolve-vars.outputs.alpine_version }}" \
-            --modloop "$PWD/build/arm64/base/modloop-${{ needs.resolve-vars.outputs.alpine_flavor }}"
-
-      - name: Upload rootfs.ext4
+      - name: Upload kernel
         uses: actions/upload-artifact@v4
         with:
-          name: rootfs-ext4
-          path: build/arm64/work/rootfs.ext4
+          name: kernel-arm64
+          path: arcbox-kernel/output/kernel-arm64
           retention-days: 1
 
   # ==========================================================================
-  # Stage 2: Assemble final tarball (kernel + initramfs + rootfs + runtime).
-  # Runs on macOS for kernel format conversion and initramfs rebuild.
+  # Stage 1b: Build EROFS rootfs (needs Docker for Alpine container +
+  # mkfs.erofs for image creation).
+  # ==========================================================================
+  build-rootfs:
+    name: Build EROFS Rootfs
+    needs: resolve-vars
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout boot-assets
+        uses: actions/checkout@v4
+
+      - name: Install erofs-utils
+        run: sudo apt-get update && sudo apt-get install -y erofs-utils
+
+      - name: Build EROFS rootfs
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/build-erofs-rootfs.sh \
+            --output "$PWD/build/rootfs.erofs" \
+            --arch arm64
+
+      - name: Upload rootfs.erofs
+        uses: actions/upload-artifact@v4
+        with:
+          name: rootfs-erofs
+          path: build/rootfs.erofs
+          retention-days: 1
+
+  # ==========================================================================
+  # Stage 2: Assemble tarball (kernel + rootfs.erofs + manifest.json).
   # ==========================================================================
   build:
     name: Assemble Boot Assets
-    needs: [resolve-vars, build-agent, build-rootfs]
-    runs-on: macos-14
+    needs: [resolve-vars, build-kernel, build-rootfs]
+    runs-on: ubuntu-latest
 
     outputs:
       version: ${{ needs.resolve-vars.outputs.version }}
       tarball: ${{ steps.assemble.outputs.tarball }}
 
     steps:
-      - name: Checkout boot-assets repository
+      - name: Checkout boot-assets
         uses: actions/checkout@v4
 
-      - name: Clone arcbox source
-        run: |
-          git clone --depth 1 \
-            --branch "${{ needs.resolve-vars.outputs.arcbox_ref }}" \
-            "https://github.com/${{ needs.resolve-vars.outputs.arcbox_repo }}.git" \
-            arcbox-src
-
-      - name: Install build dependencies
-        run: |
-          if ! command -v unsquashfs >/dev/null 2>&1; then
-            brew install squashfs
-          fi
-
-      - name: Download agent binary
+      - name: Download kernel
         uses: actions/download-artifact@v4
         with:
-          name: agent-binary
+          name: kernel-arm64
           path: staging
 
-      - name: Download rootfs.ext4
+      - name: Download rootfs.erofs
         uses: actions/download-artifact@v4
         with:
-          name: rootfs-ext4
+          name: rootfs-erofs
           path: staging
 
-      - name: Build release assets
+      - name: Assemble release
         id: assemble
         run: |
-          chmod +x scripts/*.sh staging/arcbox-agent
+          chmod +x scripts/*.sh
 
           ./scripts/build-release.sh \
             --version "${{ needs.resolve-vars.outputs.version }}" \
-            --arcbox-dir "$PWD/arcbox-src" \
-            --arcbox-repo "${{ needs.resolve-vars.outputs.arcbox_repo }}" \
-            --arcbox-ref "${{ needs.resolve-vars.outputs.arcbox_ref }}" \
-            --alpine-version "${{ needs.resolve-vars.outputs.alpine_version }}" \
-            --alpine-flavor "${{ needs.resolve-vars.outputs.alpine_flavor }}" \
-            --docker-version "${{ needs.resolve-vars.outputs.docker_version }}" \
-            --docker-sha256 "${{ needs.resolve-vars.outputs.docker_sha256 }}" \
-            --containerd-version "${{ needs.resolve-vars.outputs.containerd_version }}" \
-            --containerd-sha256 "${{ needs.resolve-vars.outputs.containerd_sha256 }}" \
-            --youki-version "${{ needs.resolve-vars.outputs.youki_version }}" \
-            --youki-sha256 "${{ needs.resolve-vars.outputs.youki_sha256 }}" \
-            --agent-bin "$PWD/staging/arcbox-agent" \
-            --rootfs "$PWD/staging/rootfs.ext4" \
-            --arcbox-sha "${{ needs.build-agent.outputs.arcbox_sha }}" \
+            --kernel "$PWD/staging/kernel-arm64" \
+            --rootfs "$PWD/staging/rootfs.erofs" \
+            --arch arm64 \
+            --source-repo "${{ needs.resolve-vars.outputs.arcbox_repo }}" \
+            --source-ref "${{ needs.resolve-vars.outputs.arcbox_ref }}" \
             --output-dir "$PWD/dist"
 
           TARBALL="boot-assets-arm64-v${{ needs.resolve-vars.outputs.version }}.tar.gz"
@@ -335,13 +216,12 @@ jobs:
           body: |
             ## Boot Assets v${{ needs.build.outputs.version }}
 
+            Schema version 6 — kernel + EROFS rootfs only.
+
             ### Files
             - `${{ needs.build.outputs.tarball }}`
             - `${{ needs.build.outputs.tarball }}.sha256`
             - `manifest.json`
-
-            ### Build Source
-            Built from ArcBox repository pinned in `manifest.json`.
           files: |
             dist/${{ needs.build.outputs.tarball }}
             dist/${{ needs.build.outputs.tarball }}.sha256
@@ -350,7 +230,7 @@ jobs:
           prerelease: ${{ contains(needs.build.outputs.version, 'alpha') || contains(needs.build.outputs.version, 'beta') }}
 
   # ==========================================================================
-  # Upload to Cloudflare R2 (CDN: dl.arcbox.dev)
+  # Upload to Cloudflare R2 (CDN: dl.arcbox.dev).
   # ==========================================================================
   upload-r2:
     name: Upload to R2
@@ -374,7 +254,6 @@ jobs:
           cp "dist/${TARBALL}.sha256" "r2-staging/v${VERSION}/"
           cp "dist/manifest.json" "r2-staging/v${VERSION}/"
 
-          # latest.json pointer (lives at bucket root under boot-assets/)
           printf '{"version":"%s","arm64":{"bundle":"%s"}}\n' \
             "$VERSION" "$TARBALL" \
             | python3 -m json.tool > "r2-staging/latest.json"

@@ -1,6 +1,6 @@
 # ArcBox Boot Assets
 
-`boot-assets` is the single source of truth for ArcBox VM boot artifacts.
+`boot-assets` is the single source of truth for ArcBox VM boot artifacts (schema v6).
 
 Each release publishes:
 
@@ -10,10 +10,12 @@ Each release publishes:
 
 The tarball contains:
 
-1. `kernel`
-2. `initramfs.cpio.gz`
-3. `runtime/bin/` (`dockerd`, `containerd`, `youki`, and helper binaries)
-4. `manifest.json`
+1. `kernel` — self-compiled Linux kernel (all drivers built-in, `CONFIG_MODULES=n`)
+2. `rootfs.erofs` — minimal read-only rootfs (busybox + mkfs.btrfs + iptables-legacy + CA certs)
+3. `manifest.json` — schema version 6
+
+No agent binary, no runtime binaries, no initramfs.
+Agent and runtime are distributed via VirtioFS from the host.
 
 ## Runtime Consumption
 
@@ -21,7 +23,7 @@ ArcBox downloads boot assets from GitHub Releases:
 
 1. Repository: `arcbox-labs/boot-assets`
 2. Tag format: `v{version}`
-3. Version is selected by `ARCBOX_BOOT_ASSET_VERSION` or ArcBox default
+3. Version is selected by `BOOT_ASSET_VERSION` in `arcbox-core`
 
 ## Build And Release
 
@@ -34,44 +36,54 @@ Trigger:
 1. Push tag: `v*`
 2. Manual dispatch with explicit version
 
+Pipeline stages:
+
+1. **Build kernel** — clones `arcbox-kernel`, builds ARM64 kernel via Docker
+2. **Build EROFS rootfs** — creates minimal rootfs from Alpine static binaries
+3. **Assemble** — packages kernel + rootfs.erofs + manifest.json into tarball
+4. **Release** — publishes to GitHub Releases and Cloudflare R2
+
 ### Local build
 
 Prerequisites:
 
-1. Rust toolchain with `aarch64-unknown-linux-musl`
-2. `protoc` (`protobuf`) for compiling `arcbox-protocol`
-3. `unsquashfs`, `cpio`, `curl`, `shasum`, `tar`
-4. ArcBox source checkout (for building `arcbox-agent`)
-
-Example:
+1. Docker (for extracting static Alpine binaries)
+2. `mkfs.erofs` (`erofs-utils`)
+3. Kernel binary from `arcbox-kernel`
 
 ```bash
-# In boot-assets repo
-chmod +x scripts/*.sh
+# Build EROFS rootfs only
+./scripts/build-erofs-rootfs.sh --output build/rootfs.erofs
 
+# Full release build (requires pre-built kernel)
 ./scripts/build-release.sh \
-  --version 0.0.1-alpha.3 \
-  --arcbox-dir ../arcbox \
-  --arcbox-repo arcbox-labs/arcbox \
-  --arcbox-ref master
+  --version 0.1.0 \
+  --kernel ../arcbox-kernel/output/kernel-arm64
 ```
 
 Output files are written to `dist/`.
 
-Optional runtime version overrides:
+## EROFS Rootfs Contents
 
-```bash
-./scripts/build-release.sh \
-  --version 0.0.1-alpha.3 \
-  --arcbox-dir ../arcbox \
-  --docker-version 28.0.3 \
-  --containerd-version 1.7.26 \
-  --youki-version 0.5.7
+```
+/ (EROFS, read-only, LZ4HC compressed)
+├── bin/
+│   └── busybox          # Static busybox (+ symlinks: sh, mount, mkdir, ...)
+├── sbin/
+│   ├── init             # Trampoline: mount /proc /sys /dev → mount VirtioFS → exec agent
+│   ├── mkfs.btrfs       # Btrfs formatter (first-boot data disk)
+│   ├── iptables         # iptables-legacy (Docker bridge networking)
+│   └── (symlinks)       # iptables-save, iptables-restore, ip6tables, ...
+├── lib/
+│   └── ld-musl-*.so.1   # musl libc
+├── cacerts/
+│   └── ca-certificates.crt
+└── (mount points)       # tmp/ run/ proc/ sys/ dev/ mnt/ arcbox/ Users/ etc/ var/
 ```
 
-## Notes
+## Scripts
 
-1. Base assets are fetched from Alpine `alpine-netboot` tarball.
-2. Download step validates tarball SHA256 from Alpine `latest-releases.yaml`.
-3. `initramfs.cpio.gz` is rebuilt with `arcbox-agent` injected.
-4. `manifest.json` records source repository/ref/sha, artifact checksums, and `runtime_assets` metadata.
+| Script | Purpose |
+|--------|---------|
+| `scripts/build-erofs-rootfs.sh` | Build minimal EROFS rootfs from Alpine static binaries |
+| `scripts/build-release.sh` | Assemble release tarball (kernel + rootfs.erofs + manifest) |
