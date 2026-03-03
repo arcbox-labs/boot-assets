@@ -79,16 +79,31 @@ cp /bin/busybox.static /out/busybox
 
 # mkfs.btrfs — not fully static in Alpine, but we copy it with its deps.
 # The agent calls it via Command::new("/sbin/mkfs.btrfs"), so we need the
-# binary itself plus musl libc.
-cp /sbin/mkfs.btrfs /out/mkfs.btrfs
+# binary itself plus musl libc. Alpine may place it in /sbin/ or /usr/sbin/.
+if [ -f /sbin/mkfs.btrfs ]; then
+  cp /sbin/mkfs.btrfs /out/mkfs.btrfs
+elif [ -f /usr/sbin/mkfs.btrfs ]; then
+  cp /usr/sbin/mkfs.btrfs /out/mkfs.btrfs
+else
+  echo "mkfs.btrfs not found" >&2
+  exit 1
+fi
 
 # iptables-legacy multi-call binary (Docker bridge networking needs it).
-# Alpine ships iptables-legacy as a separate binary.
-if [ -f /sbin/iptables-legacy ]; then
-  cp /sbin/iptables-legacy /out/iptables
-else
-  cp /sbin/iptables /out/iptables
+# Alpine may install iptables at /sbin/, /usr/sbin/, or as iptables-legacy.
+IPTABLES_BIN=""
+for candidate in /sbin/iptables-legacy /usr/sbin/iptables-legacy /sbin/iptables /usr/sbin/iptables; do
+  if [ -f "$candidate" ]; then
+    IPTABLES_BIN="$candidate"
+    break
+  fi
+done
+if [ -z "$IPTABLES_BIN" ]; then
+  echo "iptables binary not found" >&2
+  exit 1
 fi
+echo "Using iptables: $IPTABLES_BIN"
+cp "$IPTABLES_BIN" /out/iptables
 
 # musl libc (needed by mkfs.btrfs and iptables)
 cp /lib/ld-musl-*.so.1 /out/
