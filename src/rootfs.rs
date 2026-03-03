@@ -181,8 +181,8 @@ fn set_executable(path: &Path) -> Result<()> {
 }
 
 fn check_mkfs_erofs() -> Result<()> {
-    match Command::new("mkfs.erofs").arg("--version").output() {
-        Ok(output) if output.status.success() => Ok(()),
+    match Command::new("mkfs.erofs").arg("-V").output() {
+        Ok(_) => Ok(()),
         _ => bail!(
             "mkfs.erofs not found. Install erofs-utils:\n  \
              macOS:  brew install erofs-utils\n  \
