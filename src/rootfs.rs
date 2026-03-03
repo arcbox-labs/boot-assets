@@ -56,6 +56,7 @@ apk add --no-cache \
   build-base git autoconf automake libtool pkgconf \
   linux-headers \
   util-linux-dev util-linux-static \
+  libeconf-dev \
   zlib-dev zlib-static \
   lzo-dev \
   zstd-dev zstd-static \
