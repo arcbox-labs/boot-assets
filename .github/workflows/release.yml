@@ -63,9 +63,12 @@ jobs:
   # Stage 1a: Download pre-built kernel from arcbox-labs/kernel release.
   # ==========================================================================
   download-kernel:
-    name: Download Kernel
+    name: Download Kernel (${{ matrix.arch }})
     needs: resolve-vars
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [arm64, x86_64]
 
     steps:
       - name: Download kernel from arcbox-labs/kernel
@@ -78,11 +81,11 @@ jobs:
           if [ "$KERNEL_TAG" = "latest" ]; then
             echo "==> Downloading latest kernel release"
             gh release download --repo arcbox-labs/kernel \
-              --pattern "kernel-arm64" --dir staging/
+              --pattern "kernel-${{ matrix.arch }}" --dir staging/
           else
             echo "==> Downloading kernel from tag: $KERNEL_TAG"
             gh release download "$KERNEL_TAG" --repo arcbox-labs/kernel \
-              --pattern "kernel-arm64" --dir staging/
+              --pattern "kernel-${{ matrix.arch }}" --dir staging/
           fi
 
           ls -lh staging/
@@ -91,8 +94,8 @@ jobs:
       - name: Upload kernel artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-arm64
-          path: staging/kernel-arm64
+          name: kernel-${{ matrix.arch }}
+          path: staging/kernel-${{ matrix.arch }}
           retention-days: 1
 
   # ==========================================================================
@@ -100,9 +103,16 @@ jobs:
   # mkfs.erofs for image creation).
   # ==========================================================================
   build-rootfs:
-    name: Build EROFS Rootfs
+    name: Build EROFS Rootfs (${{ matrix.arch }})
     needs: resolve-vars
-    runs-on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+          - arch: x86_64
+            runner: ubuntu-24.04
 
     steps:
       - name: Checkout boot-assets
@@ -116,12 +126,12 @@ jobs:
           chmod +x scripts/*.sh
           ./scripts/build-erofs-rootfs.sh \
             --output "$PWD/build/rootfs.erofs" \
-            --arch arm64
+            --arch ${{ matrix.arch }}
 
       - name: Upload rootfs.erofs
         uses: actions/upload-artifact@v4
         with:
-          name: rootfs-erofs
+          name: rootfs-erofs-${{ matrix.arch }}
           path: build/rootfs.erofs
           retention-days: 1
 
@@ -129,13 +139,12 @@ jobs:
   # Stage 2: Assemble tarball (kernel + rootfs.erofs + manifest.json).
   # ==========================================================================
   build:
-    name: Assemble Boot Assets
+    name: Assemble Boot Assets (${{ matrix.arch }})
     needs: [resolve-vars, download-kernel, build-rootfs]
     runs-on: ubuntu-latest
-
-    outputs:
-      version: ${{ needs.resolve-vars.outputs.version }}
-      tarball: ${{ steps.assemble.outputs.tarball }}
+    strategy:
+      matrix:
+        arch: [arm64, x86_64]
 
     steps:
       - name: Checkout boot-assets
@@ -144,13 +153,13 @@ jobs:
       - name: Download kernel
         uses: actions/download-artifact@v4
         with:
-          name: kernel-arm64
+          name: kernel-${{ matrix.arch }}
           path: staging
 
       - name: Download rootfs.erofs
         uses: actions/download-artifact@v4
         with:
-          name: rootfs-erofs
+          name: rootfs-erofs-${{ matrix.arch }}
           path: staging
 
       - name: Assemble release
@@ -162,21 +171,21 @@ jobs:
 
           ./scripts/build-release.sh \
             --version "${{ needs.resolve-vars.outputs.version }}" \
-            --kernel "$PWD/staging/kernel-arm64" \
+            --kernel "$PWD/staging/kernel-${{ matrix.arch }}" \
             --rootfs "$PWD/staging/rootfs.erofs" \
-            --arch arm64 \
+            --arch ${{ matrix.arch }} \
             --kernel-version "${{ needs.resolve-vars.outputs.kernel_tag }}" \
             --source-repo "arcbox-labs/kernel" \
             --source-ref "${{ needs.resolve-vars.outputs.kernel_tag }}" \
             --output-dir "$PWD/dist"
 
-          TARBALL="boot-assets-arm64-v${{ needs.resolve-vars.outputs.version }}.tar.gz"
+          TARBALL="boot-assets-${{ matrix.arch }}-v${{ needs.resolve-vars.outputs.version }}.tar.gz"
           echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: boot-assets-release
+          name: boot-assets-release-${{ matrix.arch }}
           path: |
             dist/${{ steps.assemble.outputs.tarball }}
             dist/${{ steps.assemble.outputs.tarball }}.sha256
@@ -188,65 +197,86 @@ jobs:
   # ==========================================================================
   release:
     name: Create GitHub Release
-    needs: build
+    needs: [resolve-vars, build]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
 
     steps:
-      - name: Download build artifacts
+      - name: Download arm64 artifacts
         uses: actions/download-artifact@v4
         with:
-          name: boot-assets-release
+          name: boot-assets-release-arm64
+          path: dist
+
+      - name: Download x86_64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: boot-assets-release-x86_64
           path: dist
 
       - name: Publish release
+        env:
+          VERSION: ${{ needs.resolve-vars.outputs.version }}
         uses: softprops/action-gh-release@v2
         with:
-          name: Boot Assets v${{ needs.build.outputs.version }}
+          name: Boot Assets v${{ needs.resolve-vars.outputs.version }}
           body: |
-            ## Boot Assets v${{ needs.build.outputs.version }}
+            ## Boot Assets v${{ needs.resolve-vars.outputs.version }}
 
             Schema version 6 — kernel + EROFS rootfs only.
 
-            ### Files
-            - `${{ needs.build.outputs.tarball }}`
-            - `${{ needs.build.outputs.tarball }}.sha256`
+            ### Files (ARM64)
+            - `boot-assets-arm64-v${{ needs.resolve-vars.outputs.version }}.tar.gz`
+            - `boot-assets-arm64-v${{ needs.resolve-vars.outputs.version }}.tar.gz.sha256`
+
+            ### Files (x86_64)
+            - `boot-assets-x86_64-v${{ needs.resolve-vars.outputs.version }}.tar.gz`
+            - `boot-assets-x86_64-v${{ needs.resolve-vars.outputs.version }}.tar.gz.sha256`
+
             - `manifest.json`
-          files: |
-            dist/${{ needs.build.outputs.tarball }}
-            dist/${{ needs.build.outputs.tarball }}.sha256
-            dist/manifest.json
+          files: dist/*
           draft: false
-          prerelease: ${{ contains(needs.build.outputs.version, 'alpha') || contains(needs.build.outputs.version, 'beta') }}
+          prerelease: ${{ contains(needs.resolve-vars.outputs.version, 'alpha') || contains(needs.resolve-vars.outputs.version, 'beta') }}
 
   # ==========================================================================
   # Upload to Cloudflare R2 (CDN: dl.arcbox.dev).
   # ==========================================================================
   upload-r2:
     name: Upload to R2
-    needs: build
+    needs: [resolve-vars, build]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
 
     steps:
-      - name: Download build artifacts
+      - name: Download arm64 artifacts
         uses: actions/download-artifact@v4
         with:
-          name: boot-assets-release
-          path: dist
+          name: boot-assets-release-arm64
+          path: dist/arm64
+
+      - name: Download x86_64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: boot-assets-release-x86_64
+          path: dist/x86_64
 
       - name: Prepare R2 directory structure
         run: |
-          VERSION="${{ needs.build.outputs.version }}"
-          TARBALL="${{ needs.build.outputs.tarball }}"
+          VERSION="${{ needs.resolve-vars.outputs.version }}"
 
           mkdir -p "r2-staging/v${VERSION}"
-          cp "dist/${TARBALL}" "r2-staging/v${VERSION}/"
-          cp "dist/${TARBALL}.sha256" "r2-staging/v${VERSION}/"
-          cp "dist/manifest.json" "r2-staging/v${VERSION}/"
 
-          printf '{"version":"%s","arm64":{"bundle":"%s"}}\n' \
-            "$VERSION" "$TARBALL" \
+          for ARCH in arm64 x86_64; do
+            TARBALL="boot-assets-${ARCH}-v${VERSION}.tar.gz"
+            cp "dist/${ARCH}/${TARBALL}" "r2-staging/v${VERSION}/"
+            cp "dist/${ARCH}/${TARBALL}.sha256" "r2-staging/v${VERSION}/"
+          done
+          # Use arm64 manifest as canonical (identical schema, differs only in arch field).
+          cp "dist/arm64/manifest.json" "r2-staging/v${VERSION}/manifest-arm64.json"
+          cp "dist/x86_64/manifest.json" "r2-staging/v${VERSION}/manifest-x86_64.json"
+
+          printf '{"version":"%s","arm64":{"bundle":"boot-assets-arm64-v%s.tar.gz"},"x86_64":{"bundle":"boot-assets-x86_64-v%s.tar.gz"}}\n' \
+            "$VERSION" "$VERSION" "$VERSION" \
             | python3 -m json.tool > "r2-staging/latest.json"
 
           echo "=== R2 staging ==="
@@ -264,9 +294,8 @@ jobs:
 
       - name: Verify CDN
         run: |
-          VERSION="${{ needs.build.outputs.version }}"
-          TARBALL="${{ needs.build.outputs.tarball }}"
-          URL="https://dl.arcbox.dev/boot-assets/v${VERSION}/${TARBALL}.sha256"
+          VERSION="${{ needs.resolve-vars.outputs.version }}"
+          URL="https://dl.arcbox.dev/boot-assets/v${VERSION}/boot-assets-arm64-v${VERSION}.tar.gz.sha256"
 
           sleep 3
           HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$URL")
