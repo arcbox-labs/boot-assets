@@ -4,7 +4,7 @@ version = "0.2.0"
 edition = "2024"
 description = "Boot asset manifest types, asset manager, and CLI tools for ArcBox VM runtime"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/arcbox-labs/boot-assets"
+repository = "https://github.com/arcboxlabs/boot-assets"
 exclude = ["dev/", "build/", "dist/", "output/", "plan.boot.md"]
 
 [features]

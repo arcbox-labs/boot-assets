@@ -10,7 +10,7 @@ Each release publishes per-architecture tarballs plus a unified multi-target man
 
 The tarball contains:
 
-1. `kernel` — pre-built Linux kernel from [`arcbox-labs/kernel`](https://github.com/arcbox-labs/kernel) (all drivers built-in, `CONFIG_MODULES=n`)
+1. `kernel` — pre-built Linux kernel from [`arcboxlabs/kernel`](https://github.com/arcboxlabs/kernel) (all drivers built-in, `CONFIG_MODULES=n`)
 2. `rootfs.erofs` — minimal read-only rootfs (busybox + mkfs.btrfs + iptables-legacy + CA certs)
 3. `manifest.json` — per-arch manifest (merged into unified manifest at release time)
 
@@ -28,7 +28,7 @@ The manifest supports multiple target architectures and host-side binaries:
   "schema_version": 0,
   "asset_version": "0.2.0",
   "built_at": "2026-03-03T12:00:00Z",
-  "source_repo": "arcbox-labs/kernel",
+  "source_repo": "arcboxlabs/kernel",
   "source_ref": "v0.1.0",
   "source_sha": "abc123",
   "targets": {
@@ -76,7 +76,7 @@ boot-assets build-release \
   --kernel build/kernel-arm64 \
   --rootfs build/rootfs.erofs \
   --arch arm64 \
-  --source-repo arcbox-labs/kernel \
+  --source-repo arcboxlabs/kernel \
   --source-ref v0.1.0
 
 # Merge per-arch manifests into unified multi-target manifest
@@ -97,7 +97,7 @@ Trigger:
 
 Pipeline stages:
 
-1. **Download kernel** — downloads pre-built ARM64/x86_64 kernels from [`arcbox-labs/kernel`](https://github.com/arcbox-labs/kernel) release
+1. **Download kernel** — downloads pre-built ARM64/x86_64 kernels from [`arcboxlabs/kernel`](https://github.com/arcboxlabs/kernel) release
 2. **Build EROFS rootfs** — creates minimal rootfs from Alpine static binaries (per-arch)
 3. **Assemble** — packages kernel + rootfs.erofs + manifest.json into tarball (per-arch)
 4. **Merge** — merges per-arch manifests into unified multi-target manifest
@@ -110,14 +110,14 @@ Prerequisites:
 1. Rust toolchain
 2. Docker (for extracting static Alpine binaries)
 3. `mkfs.erofs` (`erofs-utils`)
-4. Kernel binary from [`arcbox-labs/kernel`](https://github.com/arcbox-labs/kernel) release
+4. Kernel binary from [`arcboxlabs/kernel`](https://github.com/arcboxlabs/kernel) release
 
 ```bash
 # Build the CLI
 cargo build --release
 
-# Download kernel from arcbox-labs/kernel release
-gh release download v0.1.0 --repo arcbox-labs/kernel --pattern "kernel-arm64" --dir build/
+# Download kernel from arcboxlabs/kernel release
+gh release download v0.1.0 --repo arcboxlabs/kernel --pattern "kernel-arm64" --dir build/
 
 # Full release build
 ./target/release/boot-assets build-release \

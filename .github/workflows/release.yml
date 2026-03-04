@@ -13,7 +13,7 @@ on:
         required: true
         type: string
       kernel_tag:
-        description: "arcbox-labs/kernel release tag to download (e.g. v0.1.0)"
+        description: "arcboxlabs/kernel release tag to download (e.g. v0.1.0)"
         required: true
         type: string
 
@@ -58,7 +58,7 @@ jobs:
           echo "  kernel_tag: $KERNEL_TAG"
 
   # ==========================================================================
-  # Stage 1a: Download pre-built kernel from arcbox-labs/kernel release.
+  # Stage 1a: Download pre-built kernel from arcboxlabs/kernel release.
   # ==========================================================================
   download-kernel:
     name: Download Kernel (${{ matrix.arch }})
@@ -69,7 +69,7 @@ jobs:
         arch: [arm64, x86_64]
 
     steps:
-      - name: Download kernel from arcbox-labs/kernel
+      - name: Download kernel from arcboxlabs/kernel
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -78,11 +78,11 @@ jobs:
 
           if [ "$KERNEL_TAG" = "latest" ]; then
             echo "==> Downloading latest kernel release"
-            gh release download --repo arcbox-labs/kernel \
+            gh release download --repo arcboxlabs/kernel \
               --pattern "kernel-${{ matrix.arch }}" --dir staging/
           else
             echo "==> Downloading kernel from tag: $KERNEL_TAG"
-            gh release download "$KERNEL_TAG" --repo arcbox-labs/kernel \
+            gh release download "$KERNEL_TAG" --repo arcboxlabs/kernel \
               --pattern "kernel-${{ matrix.arch }}" --dir staging/
           fi
 
@@ -203,7 +203,7 @@ jobs:
             --rootfs "$PWD/staging/rootfs.erofs" \
             --arch ${{ matrix.arch }} \
             --kernel-version "${{ needs.resolve-vars.outputs.kernel_tag }}" \
-            --source-repo "arcbox-labs/kernel" \
+            --source-repo "arcboxlabs/kernel" \
             --source-ref "${{ needs.resolve-vars.outputs.kernel_tag }}" \
             --output-dir "$PWD/dist" \
             --binaries-json "$PWD/dist/binaries.json"
