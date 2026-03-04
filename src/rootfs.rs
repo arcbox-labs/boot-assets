@@ -84,10 +84,10 @@ cd /tmp
 wget -q https://www.netfilter.org/projects/iptables/files/iptables-1.8.11.tar.xz
 tar -xf iptables-1.8.11.tar.xz
 cd iptables-1.8.11
-LDFLAGS="-all-static" ./configure \
+./configure \
   --enable-static --disable-shared \
   --disable-nftables --disable-connlabel
-make -j$(nproc)
+make LDFLAGS="-all-static" -j$(nproc)
 strip iptables/xtables-legacy-multi
 cp iptables/xtables-legacy-multi /out/iptables
 echo "[3/3] iptables-legacy (static) OK"
