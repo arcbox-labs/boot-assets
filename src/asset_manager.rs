@@ -124,7 +124,7 @@ impl AssetManager {
         })
     }
 
-    /// Prepare host-side binaries (dockerd, containerd, youki) into `dest_dir`.
+    /// Prepare host-side binaries (dockerd, containerd, shim, runc) into `dest_dir`.
     ///
     /// Separate from [`prepare`] — call this in the runtime init phase.
     pub async fn prepare_binaries(
