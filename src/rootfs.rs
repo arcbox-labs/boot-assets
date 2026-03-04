@@ -84,6 +84,10 @@ cd /tmp
 wget -q https://www.netfilter.org/projects/iptables/files/iptables-1.8.11.tar.xz
 tar -xf iptables-1.8.11.tar.xz
 cd iptables-1.8.11
+# Fix musl header conflict: struct ethhdr defined in both
+# linux/if_ether.h and netinet/if_ether.h. Remove the direct
+# linux/ include — the struct is provided via xtables.h already.
+sed -i '/#include <linux\/if_ether.h>/d' extensions/libxt_mac.c
 ./configure \
   --enable-static --disable-shared \
   --disable-nftables --disable-connlabel
