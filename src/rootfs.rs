@@ -84,12 +84,11 @@ cd /tmp
 wget -q https://www.netfilter.org/projects/iptables/files/iptables-1.8.11.tar.xz
 tar -xf iptables-1.8.11.tar.xz
 cd iptables-1.8.11
-# Fix musl header conflict: struct ethhdr defined in both
-# linux/if_ether.h and netinet/if_ether.h. Remove the direct
-# linux/ include from all extension sources — the struct is
-# provided via xtables.h -> netinet/ether.h already.
-find extensions -name '*.c' -exec \
-  sed -i '/#include <linux\/if_ether.h>/d' {} +
+# Fix musl header conflict: linux/if_ether.h and netinet/if_ether.h
+# both define struct ethhdr without mutual guards. Disable the kernel
+# UAPI definition and force-include the userspace header so ethhdr is
+# always available regardless of source include order.
+CPPFLAGS="-D__UAPI_DEF_ETHHDR=0 -include netinet/if_ether.h" \
 ./configure \
   --enable-static --disable-shared \
   --disable-nftables --disable-connlabel
