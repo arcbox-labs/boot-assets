@@ -11,11 +11,12 @@ Each release publishes per-architecture tarballs plus a unified multi-target man
 The tarball contains:
 
 1. `kernel` — pre-built Linux kernel from [`arcboxlabs/kernel`](https://github.com/arcboxlabs/kernel) (all drivers built-in, `CONFIG_MODULES=n`)
-2. `rootfs.erofs` — minimal read-only rootfs (busybox + mkfs.btrfs + iptables-legacy + CA certs)
+2. `rootfs.erofs` — minimal read-only rootfs (busybox + mkfs.btrfs + iptables-legacy + ebtables + ethtool + socat + CA certs)
 3. `manifest.json` — per-arch manifest (merged into unified manifest at release time)
 
-No agent binary, no runtime binaries, no initramfs.
-Agent and runtime are distributed via VirtioFS from the host.
+No agent binary in the boot tarball, and no initramfs.
+Guest runtime binaries are published separately as manifest-listed host-side
+binaries and are shared into the VM via VirtioFS from the host.
 
 ## Manifest Schema
 
@@ -142,9 +143,12 @@ Output files are written to `dist/`.
 │   ├── init             # Trampoline: mount /proc /sys /dev → mount VirtioFS → exec agent
 │   ├── mkfs.btrfs       # Btrfs formatter (first-boot data disk)
 │   ├── iptables         # iptables-legacy (Docker bridge networking)
+│   ├── ebtables         # bridge filter utility used by K3s
+│   ├── ethtool          # network utility used by K3s
+│   ├── socat            # stream relay utility used by K3s
 │   └── (symlinks)       # iptables-save, iptables-restore, ip6tables, ...
 ├── lib/
-│   └── ld-musl-*.so.1   # musl libc
+│   └── *.so*            # musl loader + shared libs for packaged host utilities
 ├── cacerts/
 │   └── ca-certificates.crt
 └── (mount points)       # tmp/ run/ proc/ sys/ dev/ mnt/ arcbox/ Users/ etc/ var/
