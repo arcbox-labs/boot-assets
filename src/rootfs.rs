@@ -33,6 +33,44 @@ const INIT_SCRIPT: &str = r#"#!/bin/busybox sh
 exec /arcbox/bin/arcbox-agent
 "#;
 
+fn k3s_host_utilities_apk_packages() -> String {
+    K3S_HOST_UTILITIES.join(" ")
+}
+
+fn k3s_host_utilities_stage_script() -> String {
+    let count = K3S_HOST_UTILITIES.len();
+    let start_index = 4;
+    let total_steps = start_index + count - 1;
+    let mut script = format!(
+        "# 4-{}. k3s host utilities from Alpine packages.\nfor bin in {} ; do\n  src=\"$(command -v \"$bin\")\"\n  cp \"$src\" \"/out/$bin\"\n  case \"$bin\" in\n",
+        total_steps,
+        k3s_host_utilities_apk_packages()
+    );
+    for (offset, binary) in K3S_HOST_UTILITIES.iter().enumerate() {
+        script.push_str(&format!("    {binary}) idx={} ;;\n", start_index + offset));
+    }
+    script.push_str(&format!(
+        "  esac\n  echo \"[$idx/{total_steps}] $bin OK\"\ndone\n"
+    ));
+    script
+}
+
+fn k3s_host_utilities_ldd_targets() -> String {
+    K3S_HOST_UTILITIES
+        .iter()
+        .map(|binary| format!("/out/{binary}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn k3s_host_utilities_ls_targets() -> String {
+    K3S_HOST_UTILITIES
+        .iter()
+        .map(|binary| format!("/out/{binary}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[derive(Debug, Clone)]
 pub struct BuildRootfsOpts {
     pub output: PathBuf,
@@ -49,10 +87,15 @@ pub fn build_rootfs(opts: &BuildRootfsOpts) -> Result<()> {
 
     let staging = tempfile::tempdir().context("failed to create temp dir")?;
     let staging_path = staging.path();
+    let utility_packages = k3s_host_utilities_apk_packages();
+    let utility_stage_script = k3s_host_utilities_stage_script();
+    let utility_ldd_targets = k3s_host_utilities_ldd_targets();
+    let utility_ls_targets = k3s_host_utilities_ls_targets();
 
     // Step 1: Build core static binaries and stage packaged k3s host utilities.
     println!("==> Building rootfs binaries via Docker ({docker_platform})");
-    let docker_script = r#"
+    let docker_script = format!(
+        r#"
 set -e
 
 apk add --no-cache \
@@ -63,7 +106,7 @@ apk add --no-cache \
   lzo-dev \
   zstd-dev zstd-static \
   busybox-static ca-certificates \
-  ebtables ethtool socat
+  {utility_packages}
 
 # 1. busybox (pre-built static from Alpine)
 cp /bin/busybox.static /out/busybox
@@ -101,22 +144,12 @@ strip iptables/xtables-legacy-multi
 cp iptables/xtables-legacy-multi /out/iptables
 echo "[3/6] iptables-legacy (static) OK"
 
-# 4-6. k3s host utilities from Alpine packages.
-for bin in ebtables ethtool socat; do
-  src="$(command -v "$bin")"
-  cp "$src" "/out/$bin"
-  case "$bin" in
-    ebtables) idx=4 ;;
-    ethtool) idx=5 ;;
-    socat) idx=6 ;;
-  esac
-  echo "[$idx/6] $bin OK"
-done
+{utility_stage_script}
 
 # Shared libraries needed by packaged utilities.
 mkdir -p /out/lib
 cp -L /lib/ld-musl-*.so.1 /out/lib/
-for bin in /out/ebtables /out/ethtool /out/socat; do
+for bin in {utility_ldd_targets}; do
   ldd "$bin" | awk '/=>/ { print $3 } /^\// { print $1 }' | while read -r lib; do
     if [ -f "$lib" ]; then
       cp -L "$lib" "/out/lib/$(basename "$lib")"
@@ -137,7 +170,7 @@ for bin in busybox mkfs.btrfs iptables; do
     echo "static OK"
   fi
 done
-for bin in ebtables ethtool socat; do
+for bin in {utility_packages}; do
   printf "  %-16s " "$bin"
   if ldd "/out/$bin" >/dev/null 2>&1; then
     echo "dynamic OK"
@@ -145,8 +178,9 @@ for bin in ebtables ethtool socat; do
     echo "static OK"
   fi
 done
-ls -lh /out/busybox /out/mkfs.btrfs /out/iptables /out/ebtables /out/ethtool /out/socat
-"#;
+ls -lh /out/busybox /out/mkfs.btrfs /out/iptables {utility_ls_targets}
+"#
+    );
 
     let status = Command::new("docker")
         .args([
@@ -159,7 +193,7 @@ ls -lh /out/busybox /out/mkfs.btrfs /out/iptables /out/ebtables /out/ethtool /ou
             "alpine:3.19",
             "sh",
             "-c",
-            docker_script,
+            &docker_script,
         ])
         .status()
         .context("failed to run docker")?;
