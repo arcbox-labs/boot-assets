@@ -16,6 +16,13 @@ const IPTABLES_SYMLINKS: &[&str] = &[
     "ip6tables-restore",
 ];
 
+/// Core statically-linked binaries built from source inside Docker.
+const CORE_STATIC_BINARIES: &[&str] = &["busybox", "mkfs.btrfs", "iptables"];
+
+const K3S_HOST_UTILITIES: &[&str] = &["ebtables", "ethtool", "socat"];
+const EROFS_BLOCK_SIZE: &str = "4096";
+const EROFS_XATTR_TOLERANCE: &str = "-1";
+
 const MOUNT_DIRS: &[&str] = &[
     "tmp", "run", "proc", "sys", "dev", "mnt", "arcbox", "Users", "etc", "var",
 ];
@@ -28,6 +35,39 @@ const INIT_SCRIPT: &str = r#"#!/bin/busybox sh
 /bin/busybox mount -t virtiofs arcbox /arcbox
 exec /arcbox/bin/arcbox-agent
 "#;
+
+fn k3s_host_utilities_apk_packages() -> String {
+    K3S_HOST_UTILITIES.join(" ")
+}
+
+/// Total number of binary build steps (core static + k3s host utilities).
+fn total_build_steps() -> usize {
+    CORE_STATIC_BINARIES.len() + K3S_HOST_UTILITIES.len()
+}
+
+fn k3s_host_utilities_stage_script() -> String {
+    let start_index = CORE_STATIC_BINARIES.len() + 1;
+    let total = total_build_steps();
+    let mut script = format!(
+        "# {start_index}-{total}. k3s host utilities from Alpine packages.\nfor bin in {} ; do\n  src=\"$(command -v \"$bin\")\"\n  cp \"$src\" \"/out/$bin\"\n  case \"$bin\" in\n",
+        k3s_host_utilities_apk_packages()
+    );
+    for (offset, binary) in K3S_HOST_UTILITIES.iter().enumerate() {
+        script.push_str(&format!("    {binary}) idx={} ;;\n", start_index + offset));
+    }
+    script.push_str(&format!(
+        "  esac\n  echo \"[$idx/{total}] $bin OK\"\ndone\n"
+    ));
+    script
+}
+
+fn k3s_host_utilities_out_paths() -> String {
+    K3S_HOST_UTILITIES
+        .iter()
+        .map(|binary| format!("/out/{binary}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 #[derive(Debug, Clone)]
 pub struct BuildRootfsOpts {
@@ -45,11 +85,15 @@ pub fn build_rootfs(opts: &BuildRootfsOpts) -> Result<()> {
 
     let staging = tempfile::tempdir().context("failed to create temp dir")?;
     let staging_path = staging.path();
+    let utility_packages = k3s_host_utilities_apk_packages();
+    let utility_stage_script = k3s_host_utilities_stage_script();
+    let utility_out_paths = k3s_host_utilities_out_paths();
+    let total = total_build_steps();
 
-    // Step 1: Build fully-static binaries via Docker (Alpine musl).
-    // All binaries are statically linked — no .so files needed in the rootfs.
-    println!("==> Building static binaries via Docker ({docker_platform})");
-    let docker_script = r#"
+    // Step 1: Build core static binaries and stage packaged k3s host utilities.
+    println!("==> Building rootfs binaries via Docker ({docker_platform})");
+    let docker_script = format!(
+        r#"
 set -e
 
 apk add --no-cache \
@@ -59,11 +103,12 @@ apk add --no-cache \
   zlib-dev zlib-static \
   lzo-dev \
   zstd-dev zstd-static \
-  busybox-static ca-certificates
+  busybox-static ca-certificates \
+  {utility_packages}
 
 # 1. busybox (pre-built static from Alpine)
 cp /bin/busybox.static /out/busybox
-echo "[1/3] busybox (static) OK"
+echo "[1/{total}] busybox (static) OK"
 
 # 2. mkfs.btrfs (static build from source)
 cd /tmp
@@ -77,7 +122,7 @@ LDFLAGS="-static" ./configure \
 make -j$(nproc) mkfs.btrfs
 strip mkfs.btrfs
 cp mkfs.btrfs /out/
-echo "[2/3] mkfs.btrfs (static) OK"
+echo "[2/{total}] mkfs.btrfs (static) OK"
 
 # 3. iptables-legacy (static build from source)
 cd /tmp
@@ -95,12 +140,25 @@ CPPFLAGS="-D__UAPI_DEF_ETHHDR=0 -include netinet/if_ether.h" \
 make LDFLAGS="-all-static" -j$(nproc)
 strip iptables/xtables-legacy-multi
 cp iptables/xtables-legacy-multi /out/iptables
-echo "[3/3] iptables-legacy (static) OK"
+echo "[3/{total}] iptables-legacy (static) OK"
+
+{utility_stage_script}
+
+# Shared libraries needed by packaged utilities.
+mkdir -p /out/lib
+cp -L /lib/ld-musl-*.so.1 /out/lib/
+for bin in {utility_out_paths}; do
+  ldd "$bin" | awk '/=>/ { print $3 } /^\// { print $1 }' | while read -r lib; do
+    if [ -f "$lib" ]; then
+      cp -L "$lib" "/out/lib/$(basename "$lib")"
+    fi
+  done
+done
 
 # CA certificates
 cp /etc/ssl/certs/ca-certificates.crt /out/ca-certificates.crt
 
-# Verify all binaries are statically linked.
+# Verify rootfs binaries and utility dependencies.
 echo "=== Verification ==="
 for bin in busybox mkfs.btrfs iptables; do
   printf "  %-16s " "$bin"
@@ -110,8 +168,17 @@ for bin in busybox mkfs.btrfs iptables; do
     echo "static OK"
   fi
 done
-ls -lh /out/busybox /out/mkfs.btrfs /out/iptables
-"#;
+for bin in {utility_packages}; do
+  printf "  %-16s " "$bin"
+  if ldd "/out/$bin" >/dev/null 2>&1; then
+    echo "dynamic OK"
+  else
+    echo "static OK"
+  fi
+done
+ls -lh /out/busybox /out/mkfs.btrfs /out/iptables {utility_out_paths}
+"#
+    );
 
     let status = Command::new("docker")
         .args([
@@ -124,7 +191,7 @@ ls -lh /out/busybox /out/mkfs.btrfs /out/iptables
             "alpine:3.19",
             "sh",
             "-c",
-            docker_script,
+            &docker_script,
         ])
         .status()
         .context("failed to run docker")?;
@@ -139,28 +206,68 @@ ls -lh /out/busybox /out/mkfs.btrfs /out/iptables
 
     // Step 3: Create EROFS image.
     println!("==> Creating EROFS image");
-    check_mkfs_erofs()?;
-
-    if let Some(parent) = opts.output.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let status = Command::new("mkfs.erofs")
-        .arg(format!("-z{}", opts.compression))
-        .arg(&opts.output)
-        .arg(&rootfs)
-        .status()
-        .context("failed to run mkfs.erofs")?;
-    if !status.success() {
-        bail!("mkfs.erofs failed");
-    }
+    build_erofs_image_with_docker(docker_platform, &rootfs, &opts.output, &opts.compression)?;
 
     let size = humanize_size(std::fs::metadata(&opts.output)?.len());
     println!();
     println!("==> EROFS rootfs built: {} ({size})", opts.output.display());
     println!("    Compression: {}", opts.compression);
-    println!("    Contents: busybox + mkfs.btrfs + iptables-legacy + CA certs + trampoline");
-    println!("    All binaries statically linked (no .so dependencies)");
+    println!("    Block size: {} bytes", EROFS_BLOCK_SIZE);
+    println!(
+        "    Contents: busybox + mkfs.btrfs + iptables-legacy + ebtables + ethtool + socat + CA certs + trampoline"
+    );
+    println!("    Core boot tools are static; k3s host utilities include required shared libs");
+
+    Ok(())
+}
+
+fn build_erofs_image_with_docker(
+    docker_platform: &str,
+    rootfs: &Path,
+    output: &Path,
+    compression: &str,
+) -> Result<()> {
+    let output_name = output
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("invalid output filename: {}", output.display()))?;
+    let output_dir = output
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("output path has no parent: {}", output.display()))?;
+    std::fs::create_dir_all(output_dir)?;
+
+    // Install erofs-utils inside the container first.
+    let install_and_run = format!(
+        "apk add --no-cache erofs-utils >/dev/null && exec mkfs.erofs \"$@\"",
+    );
+
+    let status = Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "--platform",
+            docker_platform,
+            "-v",
+            &format!("{}:/rootfs:ro", rootfs.display()),
+            "-v",
+            &format!("{}:/out", output_dir.display()),
+            "alpine:3.19",
+            "sh",
+            "-c",
+            &install_and_run,
+            // Everything after here becomes positional args ($@) for mkfs.erofs.
+            "--",
+        ])
+        .arg(mkfs_erofs_block_flag())
+        .arg(format!("-x{EROFS_XATTR_TOLERANCE}"))
+        .arg(format!("-z{compression}"))
+        .arg(format!("/out/{output_name}"))
+        .arg("/rootfs")
+        .status()
+        .context("failed to run docker for mkfs.erofs")?;
+    if !status.success() {
+        bail!("docker mkfs.erofs failed");
+    }
 
     Ok(())
 }
@@ -179,6 +286,9 @@ fn build_rootfs_tree(rootfs: &Path, staging: &Path) -> Result<()> {
     std::fs::create_dir_all(&sbin_dir)?;
     copy_executable(&staging.join("mkfs.btrfs"), &sbin_dir.join("mkfs.btrfs"))?;
     copy_executable(&staging.join("iptables"), &sbin_dir.join("iptables"))?;
+    for binary in K3S_HOST_UTILITIES {
+        copy_executable(&staging.join(binary), &sbin_dir.join(binary))?;
+    }
     for link in IPTABLES_SYMLINKS {
         std::os::unix::fs::symlink("iptables", sbin_dir.join(link))?;
     }
@@ -187,8 +297,19 @@ fn build_rootfs_tree(rootfs: &Path, staging: &Path) -> Result<()> {
     std::fs::write(sbin_dir.join("init"), INIT_SCRIPT)?;
     set_executable(&sbin_dir.join("init"))?;
 
-    // /lib — empty dir (kept for ld-linux compat; all binaries are static)
-    std::fs::create_dir_all(rootfs.join("lib"))?;
+    // /lib — dynamic loader and shared libs for packaged k3s host utilities.
+    let lib_dir = rootfs.join("lib");
+    std::fs::create_dir_all(&lib_dir)?;
+    let staged_lib_dir = staging.join("lib");
+    if staged_lib_dir.is_dir() {
+        for entry in std::fs::read_dir(staged_lib_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() {
+                std::fs::copy(&path, lib_dir.join(entry.file_name()))?;
+            }
+        }
+    }
 
     // /cacerts
     let cacerts_dir = rootfs.join("cacerts");
@@ -220,15 +341,8 @@ fn set_executable(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn check_mkfs_erofs() -> Result<()> {
-    match Command::new("mkfs.erofs").arg("-V").output() {
-        Ok(_) => Ok(()),
-        _ => bail!(
-            "mkfs.erofs not found. Install erofs-utils:\n  \
-             macOS:  brew install erofs-utils\n  \
-             Ubuntu: apt install erofs-utils"
-        ),
-    }
+fn mkfs_erofs_block_flag() -> String {
+    format!("-b{EROFS_BLOCK_SIZE}")
 }
 
 fn humanize_size(bytes: u64) -> String {
@@ -240,5 +354,20 @@ fn humanize_size(bytes: u64) -> String {
         format!("{:.1}K", bytes as f64 / KB as f64)
     } else {
         format!("{bytes}B")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mkfs_erofs_block_flag;
+
+    #[test]
+    fn mkfs_erofs_block_flag_uses_4k_syntax() {
+        assert_eq!(mkfs_erofs_block_flag(), "-b4096");
+    }
+
+    #[test]
+    fn erofs_xattr_tolerance_disables_xattrs() {
+        assert_eq!(EROFS_XATTR_TOLERANCE, "-1");
     }
 }

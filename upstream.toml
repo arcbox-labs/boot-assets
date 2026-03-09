@@ -60,3 +60,14 @@ extract = "docker/runc"
 url = "https://download.docker.com/linux/static/stable/x86_64/docker-27.5.1.tgz"
 extract = "docker/runc"
 
+[[binaries]]
+name = "k3s"
+version = "v1.34.3+k3s1"
+
+[binaries.source.arm64]
+format = "binary"
+url = "https://github.com/k3s-io/k3s/releases/download/v1.34.3%2Bk3s1/k3s-arm64"
+
+[binaries.source.x86_64]
+format = "binary"
+url = "https://github.com/k3s-io/k3s/releases/download/v1.34.3%2Bk3s1/k3s"
