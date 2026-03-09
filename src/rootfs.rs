@@ -16,6 +16,9 @@ const IPTABLES_SYMLINKS: &[&str] = &[
     "ip6tables-restore",
 ];
 
+/// Core statically-linked binaries built from source inside Docker.
+const CORE_STATIC_BINARIES: &[&str] = &["busybox", "mkfs.btrfs", "iptables"];
+
 const K3S_HOST_UTILITIES: &[&str] = &["ebtables", "ethtool", "socat"];
 const EROFS_BLOCK_SIZE: &str = "4096";
 const EROFS_XATTR_TOLERANCE: &str = "-1";
@@ -37,33 +40,28 @@ fn k3s_host_utilities_apk_packages() -> String {
     K3S_HOST_UTILITIES.join(" ")
 }
 
+/// Total number of binary build steps (core static + k3s host utilities).
+fn total_build_steps() -> usize {
+    CORE_STATIC_BINARIES.len() + K3S_HOST_UTILITIES.len()
+}
+
 fn k3s_host_utilities_stage_script() -> String {
-    let count = K3S_HOST_UTILITIES.len();
-    let start_index = 4;
-    let total_steps = start_index + count - 1;
+    let start_index = CORE_STATIC_BINARIES.len() + 1;
+    let total = total_build_steps();
     let mut script = format!(
-        "# 4-{}. k3s host utilities from Alpine packages.\nfor bin in {} ; do\n  src=\"$(command -v \"$bin\")\"\n  cp \"$src\" \"/out/$bin\"\n  case \"$bin\" in\n",
-        total_steps,
+        "# {start_index}-{total}. k3s host utilities from Alpine packages.\nfor bin in {} ; do\n  src=\"$(command -v \"$bin\")\"\n  cp \"$src\" \"/out/$bin\"\n  case \"$bin\" in\n",
         k3s_host_utilities_apk_packages()
     );
     for (offset, binary) in K3S_HOST_UTILITIES.iter().enumerate() {
         script.push_str(&format!("    {binary}) idx={} ;;\n", start_index + offset));
     }
     script.push_str(&format!(
-        "  esac\n  echo \"[$idx/{total_steps}] $bin OK\"\ndone\n"
+        "  esac\n  echo \"[$idx/{total}] $bin OK\"\ndone\n"
     ));
     script
 }
 
-fn k3s_host_utilities_ldd_targets() -> String {
-    K3S_HOST_UTILITIES
-        .iter()
-        .map(|binary| format!("/out/{binary}"))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn k3s_host_utilities_ls_targets() -> String {
+fn k3s_host_utilities_out_paths() -> String {
     K3S_HOST_UTILITIES
         .iter()
         .map(|binary| format!("/out/{binary}"))
@@ -89,8 +87,8 @@ pub fn build_rootfs(opts: &BuildRootfsOpts) -> Result<()> {
     let staging_path = staging.path();
     let utility_packages = k3s_host_utilities_apk_packages();
     let utility_stage_script = k3s_host_utilities_stage_script();
-    let utility_ldd_targets = k3s_host_utilities_ldd_targets();
-    let utility_ls_targets = k3s_host_utilities_ls_targets();
+    let utility_out_paths = k3s_host_utilities_out_paths();
+    let total = total_build_steps();
 
     // Step 1: Build core static binaries and stage packaged k3s host utilities.
     println!("==> Building rootfs binaries via Docker ({docker_platform})");
@@ -110,7 +108,7 @@ apk add --no-cache \
 
 # 1. busybox (pre-built static from Alpine)
 cp /bin/busybox.static /out/busybox
-echo "[1/6] busybox (static) OK"
+echo "[1/{total}] busybox (static) OK"
 
 # 2. mkfs.btrfs (static build from source)
 cd /tmp
@@ -124,7 +122,7 @@ LDFLAGS="-static" ./configure \
 make -j$(nproc) mkfs.btrfs
 strip mkfs.btrfs
 cp mkfs.btrfs /out/
-echo "[2/6] mkfs.btrfs (static) OK"
+echo "[2/{total}] mkfs.btrfs (static) OK"
 
 # 3. iptables-legacy (static build from source)
 cd /tmp
@@ -142,14 +140,14 @@ CPPFLAGS="-D__UAPI_DEF_ETHHDR=0 -include netinet/if_ether.h" \
 make LDFLAGS="-all-static" -j$(nproc)
 strip iptables/xtables-legacy-multi
 cp iptables/xtables-legacy-multi /out/iptables
-echo "[3/6] iptables-legacy (static) OK"
+echo "[3/{total}] iptables-legacy (static) OK"
 
 {utility_stage_script}
 
 # Shared libraries needed by packaged utilities.
 mkdir -p /out/lib
 cp -L /lib/ld-musl-*.so.1 /out/lib/
-for bin in {utility_ldd_targets}; do
+for bin in {utility_out_paths}; do
   ldd "$bin" | awk '/=>/ { print $3 } /^\// { print $1 }' | while read -r lib; do
     if [ -f "$lib" ]; then
       cp -L "$lib" "/out/lib/$(basename "$lib")"
@@ -178,7 +176,7 @@ for bin in {utility_packages}; do
     echo "static OK"
   fi
 done
-ls -lh /out/busybox /out/mkfs.btrfs /out/iptables {utility_ls_targets}
+ls -lh /out/busybox /out/mkfs.btrfs /out/iptables {utility_out_paths}
 "#
     );
 
@@ -238,12 +236,9 @@ fn build_erofs_image_with_docker(
         .ok_or_else(|| anyhow::anyhow!("output path has no parent: {}", output.display()))?;
     std::fs::create_dir_all(output_dir)?;
 
-    let script = format!(
-        "set -e\napk add --no-cache erofs-utils >/dev/null\nmkfs.erofs {} -x{} -z{} /out/{} /rootfs\n",
-        mkfs_erofs_block_flag(),
-        EROFS_XATTR_TOLERANCE,
-        compression,
-        output_name
+    // Install erofs-utils inside the container first.
+    let install_and_run = format!(
+        "apk add --no-cache erofs-utils >/dev/null && exec mkfs.erofs \"$@\"",
     );
 
     let status = Command::new("docker")
@@ -258,9 +253,16 @@ fn build_erofs_image_with_docker(
             &format!("{}:/out", output_dir.display()),
             "alpine:3.19",
             "sh",
-            "-ceu",
-            &script,
+            "-c",
+            &install_and_run,
+            // Everything after here becomes positional args ($@) for mkfs.erofs.
+            "--",
         ])
+        .arg(mkfs_erofs_block_flag())
+        .arg(format!("-x{EROFS_XATTR_TOLERANCE}"))
+        .arg(format!("-z{compression}"))
+        .arg(format!("/out/{output_name}"))
+        .arg("/rootfs")
         .status()
         .context("failed to run docker for mkfs.erofs")?;
     if !status.success() {
