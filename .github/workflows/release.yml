@@ -397,6 +397,11 @@ jobs:
           aws s3 sync b2-staging/ "s3://${{ secrets.B2_BUCKET }}/" \
             --endpoint-url "https://s3.${{ secrets.B2_REGION }}.backblazeb2.com" \
             --size-only
+
+          # Force-upload latest.json (size-only skips it when only the
+          # version string changes but the file size stays the same).
+          aws s3 cp b2-staging/latest.json "s3://${{ secrets.B2_BUCKET }}/latest.json" \
+            --endpoint-url "https://s3.${{ secrets.B2_REGION }}.backblazeb2.com"
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.B2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.B2_SECRET_ACCESS_KEY }}
