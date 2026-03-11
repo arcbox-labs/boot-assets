@@ -10,6 +10,13 @@ use arcbox_boot::upstream::UpstreamSourceFormat;
 
 const ARCHES: &[&str] = &["arm64", "x86_64"];
 
+/// Sanitize a version string for use in file paths and URLs.
+/// Replaces `+` (semver build metadata separator) with `-` to avoid
+/// URL encoding issues on CDNs where `+` is interpreted as a space.
+fn path_safe_version(version: &str) -> String {
+    version.replace('+', "-")
+}
+
 #[derive(Args)]
 pub struct SyncBinariesArgs {
     /// Path to upstream.toml.
@@ -50,10 +57,11 @@ impl SyncBinariesArgs {
                         .get(arch)
                         .with_context(|| format!("no source for {}/{arch}", binary.name))?;
 
+                    let safe_version = path_safe_version(&binary.version);
                     let dest_dir = self
                         .output
                         .join(&binary.name)
-                        .join(&binary.version)
+                        .join(&safe_version)
                         .join(arch);
                     let dest_path = dest_dir.join(&binary.name);
 
@@ -73,7 +81,7 @@ impl SyncBinariesArgs {
                     if let Some(ref base) = self.cdn_base_url {
                         let r2_path = format!(
                             "bin/{}/{}/{}/{}",
-                            binary.name, binary.version, arch, binary.name
+                            binary.name, safe_version, arch, binary.name
                         );
                         let url = format!("{}/{}", base.trim_end_matches('/'), r2_path);
                         if check_cdn_exists(&url).await? {
@@ -227,10 +235,11 @@ fn build_manifest_fragment(
     let mut result = Vec::new();
     for binary in &config.binaries {
         let mut targets = BTreeMap::new();
+        let safe_version = path_safe_version(&binary.version);
         for &arch in arches {
             let dest = output
                 .join(&binary.name)
-                .join(&binary.version)
+                .join(&safe_version)
                 .join(arch)
                 .join(&binary.name);
             if dest.exists() {
@@ -240,7 +249,7 @@ fn build_manifest_fragment(
                     BinaryTarget {
                         path: format!(
                             "bin/{}/{}/{}/{}",
-                            binary.name, binary.version, arch, binary.name
+                            binary.name, safe_version, arch, binary.name
                         ),
                         sha256: sha,
                     },
