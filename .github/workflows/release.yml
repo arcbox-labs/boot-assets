@@ -89,7 +89,7 @@ jobs:
           ls -lh staging/
 
       - name: Upload kernel artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: kernel-${{ matrix.arch }}
           path: staging/kernel-${{ matrix.arch }}
@@ -112,13 +112,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -140,7 +140,7 @@ jobs:
             --arch ${{ matrix.arch }}
 
       - name: Upload rootfs.erofs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rootfs-erofs-${{ matrix.arch }}
           path: build/rootfs.erofs
@@ -159,13 +159,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -178,13 +178,13 @@ jobs:
         run: cargo build --release --features build --no-default-features
 
       - name: Download kernel
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: kernel-${{ matrix.arch }}
           path: staging
 
       - name: Download rootfs.erofs
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: rootfs-erofs-${{ matrix.arch }}
           path: staging
@@ -209,7 +209,7 @@ jobs:
             --binaries-json "$PWD/dist/binaries.json"
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: boot-assets-release-${{ matrix.arch }}
           path: dist/
@@ -225,13 +225,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -244,13 +244,13 @@ jobs:
         run: cargo build --release --features build --no-default-features
 
       - name: Download arm64 artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: boot-assets-release-arm64
           path: dist/arm64
 
       - name: Download x86_64 artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: boot-assets-release-x86_64
           path: dist/x86_64
@@ -266,7 +266,7 @@ jobs:
           cat dist/manifest.json
 
       - name: Upload merged manifest
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: manifest-merged
           path: dist/manifest.json
@@ -283,19 +283,19 @@ jobs:
 
     steps:
       - name: Download arm64 artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: boot-assets-release-arm64
           path: dist
 
       - name: Download x86_64 artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: boot-assets-release-x86_64
           path: dist
 
       - name: Download merged manifest
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: manifest-merged
           path: dist
@@ -345,19 +345,19 @@ jobs:
 
     steps:
       - name: Download arm64 artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: boot-assets-release-arm64
           path: dist/arm64
 
       - name: Download x86_64 artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: boot-assets-release-x86_64
           path: dist/x86_64
 
       - name: Download merged manifest
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: manifest-merged
           path: dist
